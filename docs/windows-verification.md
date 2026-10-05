@@ -66,7 +66,13 @@ Command: `npm.cmd run build:win -- --publish never --config.nsis.artifactName=il
 
 7-Zip tested and extracted both the executable container and the embedded x64 application archive with exit 0; the application archive contains 80 files. This verification reported no container warnings. All seven compiled files extracted from the actual installer match the fresh `out` files byte for byte. The packaged MIT license matches the source license, including the original copyright notice. Local Git, design-hook and verification metadata are absent from the application archive. The application executable has PE Machine `0x8664` (x64). The ASAR SHA256 is `ab622da0451cd8cdad93caa890b6d66b9233cb1dcd7824fe0e457a13e704660d`.
 
-A checksum sidecar and a local verification manifest accompany the artifact. The version remains `0.3.1`; the filename and checksum distinguish this package from the initial installer. A manual installation/reinstallation and guided-import check on the test PC remain pending.
+A checksum sidecar and a local verification manifest accompany the artifact. The version remains `0.3.1`; the filename and checksum distinguish this package from the initial installer.
+
+### Manual feedback on the updated installer
+
+On 2026-10-05, after receiving this updated installer, the user reported that the linked skill was imported and recognized by both Codex and OpenCode. In OpenCode, invoking `/caveman` with a question produced the expected terse Caveman response. The user also observed that invoking the skill through a slash command displays its expanded instructions in the user message; this behavior was present before the import change and with other skills.
+
+This feedback supports guided import, delivery, discovery by both tools, and actual application of the skill in the reported OpenCode invocation. It is user-reported evidence. Tool versions, transcripts and before/after hashes were not collected. A separate installation/reinstallation result for this updated package and the Cancel path were not explicitly reported; the earlier installer has its own installation/reinstallation feedback above.
 
 ## Guided import of linked skills
 
@@ -105,6 +111,12 @@ The latest gate ran on code commit `e33d11f`, after the review fixes and the del
 
 The tests ran as a standard user, without elevation. Symbolic-link creation was available on the test machine, so the network-link test ran instead of being skipped.
 
+### Draft preparation gate
+
+On 2026-10-05, the gate was repeated on branch `codex/linked-skill-import` at `e60f558`, with only this verification document being updated. `npm.cmd run test:windows`, `npm.cmd test`, and `npm.cmd run lint` each exited 0. The Windows run again reported 132 unit tests (131 passed, one upstream Homebrew skip), 4/4 release fixtures, and 8/8 Electron UI tests. Lint reported zero errors and the same five upstream warnings. Node also emitted its experimental SQLite warning.
+
+The unchanged installer checksum was verified again. All seven compiled files from the fresh build matched the hashes recorded from the verified installer payload. The release draft therefore uses the already tested installer from `332d62a`; later commits update documentation only. No new installer was built for this documentation update.
+
 ### Review fixes
 
 An independent review of checkpoint `6517364` reported four findings. Each one was reproduced by a failing test before its fix.
@@ -139,7 +151,7 @@ New directory backups record `digestAlgorithm: fullTree-v1`. Backups without tha
 - Only local Windows folders are supported. A link whose stored text is a network or device path is refused without being resolved. A mapped network drive letter is recognized only after the link has been resolved, which accesses the share's metadata, and is then refused.
 - A link stored in the `\\?\C:\…` form is treated as a device path and refused.
 - Plugin caches, marketplaces, and per-project configurations remain outside this flow.
-- The updated installer includes this change, but no manual test of its installation or guided import has been recorded yet. Feedback on the initial installer does not verify the new package.
+- The updated installer has user-reported linked-import and tool-discovery feedback, including an OpenCode invocation that applied the skill. Its separate installation/reinstallation and Cancel checks were not explicitly reported.
 
 ## Known limitation
 
