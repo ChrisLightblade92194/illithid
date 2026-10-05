@@ -36,13 +36,17 @@ import {
   readStoredVariants,
   type GlobalImportListing,
   type GlobalImportResult,
+  type ImportedGlobalItem,
   type LinkedSkillCandidate,
   type LinkedSkillConfirmation,
   type LinkedSkillPreviewResult
 } from '../src/engine/globalImport'
 import { dirContentHash } from '../src/engine/skills'
 import { applyGlobalSync, planGlobalSync } from '../src/engine/globalManualSync'
-import { readGlobalChoices } from '../src/engine/globalVariants'
+import { listGlobalVariants, readGlobalChoices } from '../src/engine/globalVariants'
+import { readDestination } from '../src/engine/globalDestinations'
+import { applyGlobalRestore, planGlobalRestore } from '../src/engine/globalRestore'
+import { readBackupMeta, readOperation, writeOperation } from '../src/engine/globalOperations'
 import { confirmGlobalPath } from '../src/engine/globalPaths'
 import { globalLibraryView, setRecipient } from '../src/engine/globalView'
 import { globalHandlers } from '../src/main/globalIpc'
@@ -545,6 +549,156 @@ test('linked skill: the digest covers every entry that is copied, .DS_Store incl
   assert.deepEqual(rb2.errors, [])
   assert.equal(readFileSync(join(rb2.items[0].storedPath, '.DS_Store/payload.bin'), 'utf8'), 'v2\n')
   assert.equal(libEntries(b.home).length, 2)
+})
+
+/** A delivered linked skill whose resource folder happens to be named .DS_Store. */
+function deliveredLinkedResources(): Linked & {
+  first: ImportedGlobalItem
+  importNow: () => ImportedGlobalItem
+  choose: (id: string) => void
+  destination: string
+} {
+  const l = linkedHome()
+  put(l.target, '.DS_Store/payload.bin', 'v1\n')
+  mkdirSync(join(l.home, '.codex'), { recursive: true })
+  confirmGlobalPath(l.home, 'claude', join(l.home, '.claude'))
+  confirmGlobalPath(l.home, 'codex', join(l.home, '.codex'))
+  const paths = resolveGlobalPaths(l.home, {}, {})
+  const c = confirmOf(listGlobalImportables(l.home, paths).linked[0])
+  const importNow = (): ImportedGlobalItem => {
+    const p = previewLinkedSkills(l.home, [c], paths)
+    assert.deepEqual(p.errors, [])
+    const r = importLinkedSkills(l.home, p.items, paths)
+    assert.deepEqual(r.errors, [])
+    assert.equal(r.items.length, 1)
+    return r.items[0]
+  }
+  const choose = (id: string): void =>
+    assert.deepEqual(
+      setRecipient(l.home, { kind: 'skill', name: 'caveman', tool: 'codex', variantId: id }, {}),
+      { ok: true }
+    )
+  const first = importNow()
+  choose(first.id)
+  const applied = applyGlobalSync(
+    l.home,
+    planGlobalSync(l.home, readGlobalChoices(l.home), { paths })
+  )
+  assert.equal(applied.status, 'completed')
+  return {
+    ...l,
+    paths,
+    first,
+    importNow,
+    choose,
+    destination: join(l.home, '.codex/skills/caveman')
+  }
+}
+
+test('linked skill: a resource-only variant change is delivered and can be restored', () => {
+  const f = deliveredLinkedResources()
+  writeFileSync(join(f.target, '.DS_Store/payload.bin'), 'v2\n')
+  const second = f.importNow()
+  f.choose(second.id)
+  const plan = planGlobalSync(f.home, readGlobalChoices(f.home), { paths: f.paths })
+  const applied = applyGlobalSync(f.home, plan)
+  assert.equal(applied.status, 'completed')
+  assert.equal(
+    readFileSync(join(f.destination, '.DS_Store/payload.bin'), 'utf8'),
+    'v2\n',
+    'the second Apply claimed completion without copying the selected resource'
+  )
+  const variants = listGlobalVariants(f.home)
+  const one = variants.find((v) => v.id === f.first.id)!
+  const two = variants.find((v) => v.id === second.id)!
+  assert.notEqual(one.revision, two.revision)
+  assert.ok(!one.sameContentAs.includes(two.id))
+  assert.deepEqual(
+    plan.changes.map((c) => c.op),
+    ['update']
+  )
+  assert.equal(
+    globalLibraryView(f.home, {})
+      .groups.find((g) => g.name === 'caveman')!
+      .recipients.find((r) => r.tool === 'codex')!.status,
+    'synced'
+  )
+  const restore = planGlobalRestore(f.home, applied.operationId, { paths: f.paths })
+  assert.deepEqual(restore.conflicts, [])
+  assert.deepEqual(restore.excluded, [])
+  assert.equal(applyGlobalRestore(f.home, restore).status, 'completed')
+  assert.equal(readFileSync(join(f.destination, '.DS_Store/payload.bin'), 'utf8'), 'v1\n')
+  const backup = applied.results[0].backup!
+  writeFileSync(join(backup, 'content/.DS_Store/payload.bin'), 'corrupt backup\n')
+  assert.deepEqual(
+    planGlobalRestore(f.home, applied.operationId, { paths: f.paths }).excluded.map(
+      (e) => e.reason
+    ),
+    ['backupCorrupt']
+  )
+})
+
+test('linked skill: a resource edited at the destination is a conflict, not synced', () => {
+  const f = deliveredLinkedResources()
+  writeFileSync(join(f.destination, '.DS_Store/payload.bin'), 'local edit\n')
+  const plan = planGlobalSync(f.home, readGlobalChoices(f.home), { paths: f.paths })
+  assert.deepEqual(
+    plan.conflicts.map((c) => c.type),
+    ['destinationChanged']
+  )
+  assert.deepEqual(plan.changes, [])
+  assert.equal(
+    globalLibraryView(f.home, {})
+      .groups.find((g) => g.name === 'caveman')!
+      .recipients.find((r) => r.tool === 'codex')!.status,
+    'conflict'
+  )
+  applyGlobalSync(f.home, plan)
+  assert.equal(readFileSync(join(f.destination, '.DS_Store/payload.bin'), 'utf8'), 'local edit\n')
+})
+
+test('linked skill: a library resource changed after delivery preview invalidates Apply', () => {
+  const f = deliveredLinkedResources()
+  const plan = planGlobalSync(f.home, readGlobalChoices(f.home), { paths: f.paths })
+  writeFileSync(join(f.first.storedPath, '.DS_Store/payload.bin'), 'changed library\n')
+  assert.notEqual(applyGlobalSync(f.home, plan).status, 'completed')
+  assert.equal(readFileSync(join(f.destination, '.DS_Store/payload.bin'), 'utf8'), 'v1\n')
+})
+
+test('linked skill: legacy backups using the upstream digest remain restorable', () => {
+  const f = deliveredLinkedResources()
+  writeFileSync(join(f.target, 'SKILL.md'), SKILL + 'updated instructions\n')
+  writeFileSync(join(f.target, '.DS_Store/payload.bin'), 'v2\n')
+  const second = f.importNow()
+  f.choose(second.id)
+  const applied = applyGlobalSync(
+    f.home,
+    planGlobalSync(f.home, readGlobalChoices(f.home), { paths: f.paths })
+  )
+  assert.equal(applied.status, 'completed')
+  const backup = applied.results[0].backup!
+  const legacy = readBackupMeta(backup)! as unknown as Record<string, unknown>
+  legacy.digest = dirContentHash(join(backup, 'content'))
+  delete legacy.digestAlgorithm
+  writeFileSync(join(backup, 'meta.json'), JSON.stringify(legacy))
+  const operation = readOperation(f.home, applied.operationId)!
+  operation.results[0].beforeDigest = legacy.digest as string
+  operation.results[0].afterDigest = dirContentHash(f.destination)
+  writeOperation(f.home, operation)
+  const restore = planGlobalRestore(f.home, applied.operationId, {
+    paths: f.paths,
+    accept: [
+      {
+        destination: f.destination,
+        expectedDestinationDigest: readDestination(f.destination, 'skill').digest
+      }
+    ]
+  })
+  assert.deepEqual(restore.conflicts, [])
+  assert.deepEqual(restore.excluded, [])
+  assert.equal(applyGlobalRestore(f.home, restore).status, 'completed')
+  assert.equal(readFileSync(join(f.destination, '.DS_Store/payload.bin'), 'utf8'), 'v1\n')
+  assert.equal(readFileSync(join(f.destination, 'SKILL.md'), 'utf8'), SKILL)
 })
 
 test('linked skill: a link inside the selected skill is still refused and never followed', () => {

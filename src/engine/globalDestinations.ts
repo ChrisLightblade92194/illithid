@@ -10,7 +10,7 @@ import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { GlobalKind } from './globalImport'
 import type { GlobalTool } from './globalPaths'
-import { dirContentHash } from './skills'
+import { globalTreeDigest } from './globalDigest'
 
 export const SECTION_SEP = '::'
 
@@ -171,7 +171,8 @@ export function readDestination(destination: string, kind: GlobalKind): Destinat
         return { digest: `malformed:${bytesDigest(buf)}`, shape: 'malformedSection' }
       return { digest: bytesDigest(buf.subarray(s.bodyStart, s.bodyEnd)), shape: 'section' }
     }
-    if (kind === 'skill' && st.isDirectory()) return { digest: dirContentHash(path), shape: 'dir' }
+    if (kind === 'skill' && st.isDirectory())
+      return { digest: globalTreeDigest(path), shape: 'dir' }
     if (kind === 'rule' && st.isFile())
       return { digest: bytesDigest(readFileSync(path)), shape: 'file' }
     return { digest: 'other', shape: 'other' }

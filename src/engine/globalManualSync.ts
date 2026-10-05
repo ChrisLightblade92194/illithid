@@ -57,7 +57,7 @@ import {
   type GlobalOperationRecord
 } from './globalOperations'
 import { deliverDir } from './deliver'
-import { dirContentHash } from './skills'
+import { globalTreeDigest } from './globalDigest'
 import { appTmpName, atomicWrite } from './write'
 
 export type GlobalChangeOp = 'create' | 'update' | 'replace' | 'adopt' | 'unchanged' | 'remove'
@@ -309,7 +309,7 @@ export function variantPayload(v: VariantRecord, destination: string): Buffer | 
 }
 
 export function payloadDigest(payload: Buffer | string): string {
-  return typeof payload === 'string' ? dirContentHash(payload) : bytesDigest(payload)
+  return typeof payload === 'string' ? globalTreeDigest(payload) : bytesDigest(payload)
 }
 
 function opFor(
@@ -810,7 +810,7 @@ function writeChange(
       if (st) throw new ChangedSinceCheck()
       return
     }
-    if (!st || st.isSymbolicLink() || dirContentHash(d.path) !== state.digest)
+    if (!st || st.isSymbolicLink() || globalTreeDigest(d.path) !== state.digest)
       throw new ChangedSinceCheck()
     renameSync(d.path, aside)
   }
@@ -828,6 +828,7 @@ function writeChange(
   } else {
     const r = deliverDir(payload as string, d.path, {
       expectedHash: change.afterDigest!,
+      contentHash: globalTreeDigest,
       vacate,
       restore: () => {
         if (existsSync(aside)) {

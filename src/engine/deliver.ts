@@ -96,8 +96,10 @@ export function deliverFile(
 
 export interface DeliverDirOptions {
   strategy?: DeliverStrategy
-  /** The copy must match this dirContentHash (otherwise fails with 'hashMismatch') */
+  /** The copy must match this content hash (otherwise fails with 'hashMismatch') */
   expectedHash?: string
+  /** Defaults to upstream dirContentHash; global Windows delivery verifies every copied entry. */
+  contentHash?: (root: string) => string
   /**
    * Clears the dest slot (removes a link or pushes out the previous copy). Called after the tmp copy, right before rename.
    * On failure the caller rolls back via restore.
@@ -148,7 +150,10 @@ export function deliverDir(
   let placed = false
   try {
     copyTreeVerbatim(realpathSync(source), tmp)
-    if (opts.expectedHash !== undefined && dirContentHash(tmp) !== opts.expectedHash)
+    if (
+      opts.expectedHash !== undefined &&
+      (opts.contentHash ?? dirContentHash)(tmp) !== opts.expectedHash
+    )
       return { ok: false, reason: 'hashMismatch' }
     opts.vacate?.()
     try {

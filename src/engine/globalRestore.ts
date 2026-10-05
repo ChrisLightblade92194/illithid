@@ -35,6 +35,7 @@ import {
   type DeliveryChoice
 } from './globalVariants'
 import { dirContentHash } from './skills'
+import { globalTreeDigest } from './globalDigest'
 
 export interface RestoreDecision {
   destination: string
@@ -48,7 +49,13 @@ function backupIntact(dir: string, meta: BackupMeta): boolean {
   try {
     if (meta.shape === 'absent') return true
     if (!existsSync(content)) return false
-    const d = meta.shape === 'dir' ? dirContentHash(content) : bytesDigest(readFileSync(content))
+    if (meta.digestAlgorithm !== undefined && meta.digestAlgorithm !== 'fullTree-v1') return false
+    const d =
+      meta.shape === 'dir'
+        ? meta.digestAlgorithm === 'fullTree-v1'
+          ? globalTreeDigest(content)
+          : dirContentHash(content)
+        : bytesDigest(readFileSync(content))
     return d === meta.digest
   } catch {
     return false
@@ -96,6 +103,11 @@ export function planGlobalRestore(
       excluded.push({ choice, reason: 'linkedAncestor' })
       continue
     }
+    // Legacy backups retain their original verification; new restore plans bind every byte they will copy.
+    const restoreDigest =
+      meta.shape === 'dir' && meta.digestAlgorithm === undefined
+        ? globalTreeDigest(join(r.backup, 'content'))
+        : meta.digest
     const state = readDestination(r.destination, r.kind)
     const base = {
       choice,
@@ -105,14 +117,14 @@ export function planGlobalRestore(
       kind: r.kind,
       tool: r.tool,
       destination: r.destination,
-      sourceDigest: meta.digest ?? '',
+      sourceDigest: restoreDigest ?? '',
       destinationDigest: state.digest,
-      afterDigest: meta.digest,
+      afterDigest: restoreDigest,
       restoreFrom: r.backup,
       owner: ownerOf(deliveryAt(readDeliveries(home), r.destination)),
       notes: [] as string[]
     }
-    if (state.digest === meta.digest) {
+    if (state.digest === restoreDigest) {
       changes.push({ ...base, op: 'unchanged', preview: { before: null, after: null } })
       continue
     }

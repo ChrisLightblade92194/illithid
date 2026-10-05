@@ -37,7 +37,7 @@ import {
 import type { GlobalKind } from './globalImport'
 import { globalStateDir, type GlobalTool } from './globalPaths'
 import type { DeliveryRecord } from './globalVariants'
-import { dirContentHash } from './skills'
+import { globalTreeDigest } from './globalDigest'
 import { appTmpName, atomicWrite } from './write'
 
 /** Raised when a re-check right before a write sees content other than the one the plan was made on */
@@ -233,6 +233,8 @@ export interface BackupMeta {
   /** What was at the destination before the change */
   shape: 'absent' | 'file' | 'dir' | 'section'
   digest: string | null
+  /** Absent on legacy tree backups, which used the upstream hash with Finder-metadata exclusions. */
+  digestAlgorithm?: 'fullTree-v1'
   /** Section destinations: whether the instructions file existed */
   fileExisted?: boolean
   /** Absent destinations: the nearest folder that existed (folders created below it can be pruned on removal) */
@@ -293,7 +295,7 @@ export function writeBackup(
     shape = 'file'
   } else if (state.shape === 'dir') {
     copyTreeExact(d.path, content)
-    if (dirContentHash(content) !== state.digest) throw new ChangedSinceCheck()
+    if (globalTreeDigest(content) !== state.digest) throw new ChangedSinceCheck()
     shape = 'dir'
   } else if (state.digest !== null) throw new ChangedSinceCheck()
   let existingAncestor: string | undefined
@@ -311,6 +313,7 @@ export function writeBackup(
     kind: info.kind,
     shape,
     digest: state.digest,
+    ...(shape === 'dir' ? { digestAlgorithm: 'fullTree-v1' as const } : {}),
     ...(fileExisted !== undefined ? { fileExisted } : {}),
     ...(existingAncestor ? { existingAncestor } : {}),
     previousDelivery,
