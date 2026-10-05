@@ -68,6 +68,8 @@ import { adoptEditedRule } from '../engine/editedRules'
 import { keepImportedOriginal } from './preview'
 import { shellEnvReady } from './shellEnv'
 import { marketHandlers } from './market'
+import { releaseHandlers } from './releaseScope'
+import { globalHandlers } from './globalIpc'
 import createWorker from './worker?nodeWorker'
 
 /** fixture HOME. Used by check scripts to inject a temp directory instead of the real HOME */
@@ -323,6 +325,7 @@ export function registerIpc(): void {
 
   const market = marketHandlers(home, libWrite)
   const handlers: Record<Channel, (...args: unknown[]) => Promise<unknown>> = {
+    ...globalHandlers(home),
     ...market,
     status: () => inWorker('status', home),
     rules: () => inWorker('rules', home),
@@ -847,7 +850,8 @@ export function registerIpc(): void {
     }
   }
 
-  for (const [channel, fn] of Object.entries(handlers)) {
+  // Windows first release: channels outside its scope are refused before their handler runs (releaseScope.ts)
+  for (const [channel, fn] of Object.entries(releaseHandlers(process.platform, handlers))) {
     ipcMain.handle(`api:${channel}`, (_event, ...args) => fn(...args))
   }
   // Synchronous on purpose: the renderer needs language and color scheme before its first render

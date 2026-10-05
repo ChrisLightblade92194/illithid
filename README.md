@@ -1,117 +1,61 @@
-<p align="center"><b>English</b> | <a href="README.ko.md">한국어</a> | <a href="README.ja.md">日本語</a> | <a href="README.zh-CN.md">中文</a></p>
+# Illithid — Windows global rules and skills
 
-<div align="center">
-  <img src="build/icon.png" width="160" alt="Illithid icon">
-  <h1>Illithid</h1>
-  <p><b>Your agents. One shared setup.</b><br>
-  Keep using Claude Code, Codex, OpenCode, and more. Manage their rules, skills, subagents, and MCP servers in one place.</p>
+An unofficial Windows x64 port of [Illithid by doominkim](https://github.com/doominkim/illithid).
 
-  <p>
-    <a href="https://github.com/doominkim/illithid/releases/latest"><img src="https://img.shields.io/github/v/release/doominkim/illithid?style=flat-square&label=download" alt="Download"></a>
-    <img src="https://img.shields.io/badge/macOS-12%2B-blue?style=flat-square" alt="macOS 12+">
-    <img src="https://img.shields.io/badge/Apple%20Silicon%20%7C%20Intel-lightgrey?style=flat-square" alt="Apple Silicon and Intel">
-  </p>
+Illithid brings rules and skills from Claude Code, Codex, and OpenCode into a shared library. This fork focuses on global configuration, manual delivery, and human decisions about conflicting content.
 
-  <p>
-    <a href="https://github.com/doominkim/illithid/releases/latest/download/illithid-arm64.dmg">Download for Apple Silicon</a>
-    &nbsp;·&nbsp;
-    <a href="https://github.com/doominkim/illithid/releases/latest/download/illithid-x64.dmg">Download for Intel</a>
-  </p>
-</div>
+The Windows code is based on upstream `v0.3.1`, commit `b2ff4f5eb3115cb7ba6c38f4e1e68e709e8b4886`. The original project remains the source of Illithid. Its README is preserved in [README.upstream.md](README.upstream.md), and its copyright and MIT license are preserved in [LICENSE](LICENSE).
 
-<table align="center">
-  <tr>
-    <td align="center"><img src="docs/agents/claude.svg" width="40" height="40" alt="Claude Code"><br>Claude Code</td>
-    <td align="center"><img src="docs/agents/codex.svg" width="40" height="40" alt="Codex"><br>Codex</td>
-    <td align="center"><img src="docs/agents/opencode.svg" width="40" height="40" alt="OpenCode"><br>OpenCode</td>
-    <td align="center"><img src="docs/agents/gemini.svg" width="40" height="40" alt="Gemini CLI"><br>Gemini CLI</td>
-    <td align="center"><img src="docs/agents/copilot.svg" width="40" height="40" alt="GitHub Copilot"><br>GitHub Copilot</td>
-    <td align="center"><img src="docs/agents/grok.svg" width="40" height="40" alt="Grok CLI"><br>Grok CLI</td>
-  </tr>
-</table>
+## Windows scope
 
-## Configure once. Keep your agents in sync.
+- Import global rules and ordinary skill folders from confirmed Claude Code, Codex, and OpenCode paths. Keep the originals in place.
+- Keep same-name items with different contents as separate variants. Choose what each tool receives.
+- Preview changes before applying them. Preserve local changes until the user decides how to handle them.
+- Deliver skills as real copies, without requiring symlinks or administrator rights.
+- Back up changes and restore previous content and management state.
 
-Edit your shared setup once, preview the changes, and apply them to the tools you use. Choose which rules, skills, subagents, MCP servers, hooks, and permissions each tool receives.
+This Windows build does not expose project configuration, MCP servers, secrets, hooks, permissions, marketplace browsing, sessions, or automatic synchronization. The broader features described in the upstream README belong to the upstream application.
 
-<p align="center"><img src="docs/demo/rules.gif" width="960" alt="Demo: edit a rule, preview the change and apply it to five tools"></p>
+## Current status
 
-## Bring your existing setup.
+This is an experimental Windows port. No Windows GitHub release has been published yet.
 
-Import the configuration you already use. Choose your tools and review every change before applying it. Imported originals are backed up before Illithid starts managing them.
+The automated gate runs against synthetic profiles. Manual feedback from a separate Windows PC reports successful skill delivery to Codex and OpenCode, rule-file delivery, restore after choosing a wrong destination, and installation/reinstallation. [Verification summary](docs/windows-verification.md).
 
-<p align="center"><img src="docs/demo/tools.gif" width="960" alt="Turning Grok CLI on next to Claude Code, then previewing what leaves Codex when it is turned off"></p>
+Known limitation: a skill folder that is a symlink or junction appears as `linkedSource` / `Not importable`. The app does not follow that link automatically. A guided import that shows the real target and asks for an explicit choice is under consideration. Plugin-cache discovery remains outside this import flow.
 
-## Automate checks with hooks.
+## Build on Windows
 
-Write a hook once and it runs in Claude Code, Codex, Gemini CLI, GitHub Copilot, and Grok CLI, each in its own format. Pick when it runs, then run your own script or check the work with a plain-language rule. Keep shared scripts in the library; a script can be a folder with its own helper files.
+Requires Windows x64 and Node.js 22 or newer.
 
-<p align="center"><img src="docs/demo/hooks.gif" width="960" alt="A new hook that checks, when a reply finishes, that the tests pass, applied to the tools"></p>
-
-## Decide which commands agents can run.
-
-Allow, ask for, or block shell commands once, and Illithid writes the rule for Claude Code, Codex, Gemini CLI, and GitHub Copilot, each in its own format. Group related commands, and turn a rule off for a single tool. MCP servers get the same choices: in a server's Permissions tab, set a default for all its tools and override single tools, applied to Claude Code, Codex, Gemini CLI, and OpenCode.
-
-<p align="center"><img src="docs/demo/permissions.gif" width="960" alt="A git group that blocks force pushes and hard resets and allows git status, applied to four tools"></p>
-
-## Understand your model usage.
-
-Compare request counts, token usage, and median response time from local session logs. See API-equivalent costs calculated from published token rates, separate from your subscription bill. Filter by tool and date range to compare model and effort combinations.
-
-<p align="center"><img src="docs/demo/stats.gif" width="960" alt="Cost per request against response time by model, a tool filter, the period list and one model's cost breakdown"></p>
-
-## Install
-
-```sh
-brew install --cask doominkim/tap/illithid
+```powershell
+npm.cmd ci
+npm.cmd run build:win
 ```
 
-Or download the DMG above.
+The installer is generated in `dist/illithid-0.3.1-setup.exe`. The current package is unsigned. NSIS is configured to install for the current user and preserve app data on uninstall.
 
-## Also included
-
-- **Market**: discover and install rules, skills, and MCP servers.
-- **Sessions**: search and resume past conversations.
-- **Memory**: review and promote agent memories to the shared library.
-- **Artifacts**: browse reports, documents, and images produced by your agents.
-- **Workspaces & backup**: keep separate setups, export or import them, and back up the library with Git.
-
-## Safe by default
-
-- Illithid only writes to the tools you pick in **Settings → Tools in use**, and shows every change in a preview before applying it.
-- Replaced or deleted files are moved to `~/.config/illithid/backups/`, never erased.
-- Old backups go to the Trash after 30 days (configurable).
-
-## FAQ
-
-**Does my code or prompts go through Illithid?**
-No. Illithid never talks to any model API. It edits local config files and reads local session logs. Network access is limited to Git backup (only if you connect a remote), the update check and the Market, which talks to skills.sh, the official MCP registry and GitHub. You can turn the Market off in Settings. Illithid also asks GitHub once a day whether a newer version is out; turn that off under Settings → Updates.
-
-**Will it overwrite my existing setup?**
-On first run Illithid offers to import what you have. Imported originals are backed up before Illithid takes them over.
-
-**How do I stop using it?**
-Quit the app and uninstall. The files it wrote are plain rules, skills and config entries, so your tools keep working. To stop syncing one tool, turn it off in Settings; the preview shows what Illithid removes from it.
-
-**Why macOS only?**
-Secrets are stored in the macOS Keychain, so only macOS builds are published for now.
-
-## Build from source
-
-Requires Node.js 22 or newer.
-
-```sh
-npm install
-npm run dev          # run with hot reload
-npm run build:mac    # DMGs in dist/
+```powershell
+npm.cmd run dev
 ```
 
-Without a Developer ID certificate, build unsigned with `CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:mac`.
+## Verify
 
-## App languages
+```powershell
+npm.cmd run test:windows
+npm.cmd run lint
+```
 
-English, Korean, Japanese and Chinese.
+`test:windows` builds the app and runs the portable unit runner, Windows startup fixtures, and Electron UI tests. The fixtures use temporary profiles and do not invoke authenticated agent CLIs or install the app. The unit runner reports its Windows exclusions; this gate is not the complete upstream fixture suite.
+
+The inherited GitHub workflow checks upstream macOS behavior. It is not evidence that this Windows port has passed CI on Windows.
+
+## Contributing
+
+Keep changes focused on the Windows scope above. Use synthetic profiles for automated tests. Describe the tested behavior and any remaining limitations when proposing a change.
+
+Upstream contributions can be proposed through a pull request to [doominkim/illithid](https://github.com/doominkim/illithid). This fork is maintained independently; upstream acceptance is not assumed.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Original copyright: © 2026 doominkim.

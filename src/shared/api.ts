@@ -4,6 +4,16 @@
  * Raw target files and secrets are never sent to the renderer (owned-region excerpts + masked values).
  */
 import type {
+  GlobalImportListing,
+  GlobalImportResult,
+  GlobalImportSelection
+} from '../engine/globalImport'
+import type { GlobalPathView, GlobalTool } from '../engine/globalPaths'
+import type { GlobalSyncPlan, GlobalSyncResult } from '../engine/globalManualSync'
+import type { GlobalOperationRecord } from '../engine/globalOperations'
+import type { RestoreDecision } from '../engine/globalRestore'
+import type { GlobalLibraryView, InspectSide, RecipientRef } from '../engine/globalView'
+import type {
   PermissionRules,
   AgentDoc,
   AgentDocInput,
@@ -891,6 +901,50 @@ export interface Api {
   updateSkip(version: string): Promise<WriteResult<null>>
   /** A check found (or dropped) a newer release. Returns an unsubscribe function */
   onUpdateEvent(cb: (v: UpdateView | null) => void): () => void
+  // ---- Windows first release: global rules and skills, manual sync with preview (spec 2026-10-04)
+  /** Detected and confirmed roots of Claude Code, Codex and OpenCode */
+  globalPaths(): Promise<GlobalResult<GlobalPathView[]>>
+  /** Confirms a tool root (an existing folder) or withdraws the confirmation (null) */
+  globalPathsConfirm(tool: GlobalTool, path: string | null): Promise<GlobalResult<GlobalPathView[]>>
+  /** Importable global rules and skills of the confirmed roots (read-only) */
+  globalImportables(): Promise<GlobalResult<GlobalImportListing>>
+  /** Copies the selected items into the library as new variants; originals are not touched */
+  globalImport(selected: GlobalImportSelection[]): Promise<GlobalResult<GlobalImportResult>>
+  /** Variants grouped by name with each tool's recipient state */
+  globalVariants(): Promise<GlobalResult<GlobalLibraryView>>
+  /** The variant a tool receives for a name (null = none); the destination is computed by the backend */
+  globalChoiceSet(
+    req: RecipientRef & { variantId: string | null }
+  ): Promise<GlobalResult<GlobalLibraryView>>
+  /** Decision on the content shown at the destination (bound to its digest) */
+  globalChoiceAccept(
+    req: RecipientRef & { expectedDestinationDigest: string | null }
+  ): Promise<GlobalResult<GlobalLibraryView>>
+  /** The destination's current content becomes a new variant (bound to the digest shown) */
+  globalLocalChange(
+    req: RecipientRef & { expectedDestinationDigest: string }
+  ): Promise<GlobalResult<GlobalLibraryView>>
+  /** Stops managing the destination; files stay as they are */
+  globalLeaveUnmanaged(req: RecipientRef): Promise<GlobalResult<GlobalLibraryView>>
+  /** Explicit merge of same-name variants with identical content */
+  globalMerge(ids: string[], expectedRevision: string): Promise<GlobalResult<GlobalLibraryView>>
+  /** Both sides of a recipient decision */
+  globalInspect(
+    req: RecipientRef
+  ): Promise<GlobalResult<{ destination: InspectSide; variant: InspectSide }>>
+  /** Preview of the saved choices (stored by the backend) */
+  globalPlan(): Promise<GlobalResult<GlobalSyncPlan>>
+  /** Applies the stored preview with this id; the renderer never sends a list of writes */
+  globalApply(planId: string): Promise<GlobalResult<GlobalSyncResult>>
+  /** Operations, newest first (interrupted ones flagged, never resumed) */
+  globalOperations(): Promise<GlobalResult<GlobalOperationView[]>>
+  /** Restore preview of an operation */
+  globalRestorePlan(
+    operationId: string,
+    accept?: RestoreDecision[]
+  ): Promise<GlobalResult<GlobalSyncPlan>>
+  /** Applies the stored restore preview with this id */
+  globalRestoreApply(planId: string): Promise<GlobalResult<GlobalSyncResult>>
   // ---- library writes (library required. Auto sync after save when allowRealApply)
   toggle(
     kind: ManifestKind,
@@ -1112,7 +1166,35 @@ export interface ApplyPreviewView {
   fingerprint?: string
 }
 
+/** Envelope of the Windows global channels */
+export type GlobalResult<T> = { ok: true; value: T } | { ok: false; code: string; message: string }
+
+export type GlobalOperationView = Omit<GlobalOperationRecord, 'status'> & {
+  status: GlobalOperationRecord['status'] | 'interrupted'
+}
+
+/** Channels of the Windows global flow (the only ones the Windows release exposes, with three app channels) */
+export const GLOBAL_CHANNELS = [
+  'globalPaths',
+  'globalPathsConfirm',
+  'globalImportables',
+  'globalImport',
+  'globalVariants',
+  'globalChoiceSet',
+  'globalChoiceAccept',
+  'globalLocalChange',
+  'globalLeaveUnmanaged',
+  'globalMerge',
+  'globalInspect',
+  'globalPlan',
+  'globalApply',
+  'globalOperations',
+  'globalRestorePlan',
+  'globalRestoreApply'
+] as const
+
 export const CHANNELS = [
+  ...GLOBAL_CHANNELS,
   'status',
   'rules',
   'skills',

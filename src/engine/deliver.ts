@@ -8,13 +8,16 @@
  */
 import { randomBytes } from 'node:crypto'
 import {
-  cpSync,
+  constants,
+  copyFileSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readlinkSync,
   realpathSync,
   renameSync,
-  rmSync
+  rmSync,
+  symlinkSync
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { dirContentHash } from './skills'
@@ -106,6 +109,23 @@ export interface DeliverDirOptions {
 
 export type DeliverDirResult = { ok: true } | { ok: false; reason: 'hashMismatch' | string }
 
+/**
+ * Same result as cpSync(src, dst, { recursive, verbatimSymlinks, errorOnExist, force: false }) for files, folders and
+ * links. Windows port: fs.cpSync terminates the process (0xC0000409) on paths with non-ASCII characters in Node 22
+ * (seen on 22.22.1 inside Electron 39 and on 22.22.3), so the copy is done entry by entry.
+ */
+export function copyTreeVerbatim(src: string, dst: string): void {
+  mkdirSync(dst)
+  for (const name of readdirSync(src)) {
+    const s = join(src, name)
+    const d = join(dst, name)
+    const st = lstatSync(s)
+    if (st.isSymbolicLink()) symlinkSync(readlinkSync(s), d)
+    else if (st.isDirectory()) copyTreeVerbatim(s, d)
+    else if (st.isFile()) copyFileSync(s, d, constants.COPYFILE_EXCL)
+  }
+}
+
 function tmpDirFor(dir: string, name: string): string {
   return join(dir, appTmpName(name, randomBytes(4).toString('hex')))
 }
@@ -127,12 +147,7 @@ export function deliverDir(
   const tmp = tmpDirFor(parent, dest.slice(parent.length + 1))
   let placed = false
   try {
-    cpSync(realpathSync(source), tmp, {
-      recursive: true,
-      verbatimSymlinks: true,
-      errorOnExist: true,
-      force: false
-    })
+    copyTreeVerbatim(realpathSync(source), tmp)
     if (opts.expectedHash !== undefined && dirContentHash(tmp) !== opts.expectedHash)
       return { ok: false, reason: 'hashMismatch' }
     opts.vacate?.()

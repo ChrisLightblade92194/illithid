@@ -9,12 +9,25 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  # Windows port: executor workspace (logs written during builds) and project docs are not app content
+  - '!.superpowers{,/**}'
+  - '!docs/superpowers{,/**}'
+  - '!docs/verification{,/**}'
 asarUnpack:
   - resources/**
 win:
   executableName: illithid
+  # Windows first release: x64 only
+  target:
+    - target: nsis
+      arch:
+        - x64
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
+  # Per-user install under %LOCALAPPDATA%, no administrator rights; uninstall keeps app data, library and backups
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always

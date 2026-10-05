@@ -6,6 +6,7 @@ import { basename, join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { shellEnvReady } from './shellEnv'
+import { startupTasks } from './releaseScope'
 import {
   decideHandoff,
   readRunningVersion,
@@ -61,6 +62,9 @@ function migrateUserData(): void {
     // Copy failed — start with a fresh userData (language and color settings fall back to defaults)
   }
 }
+
+/** Startup work this platform runs (Windows first release: none of the automatic or deferred tasks) */
+const STARTUP = new Set(startupTasks())
 
 /** Automated test (playwright) mode: keep the window hidden from the user and do not steal focus */
 const TEST_MODE = process.env['ILLITHID_TEST'] === '1'
@@ -223,9 +227,9 @@ function startApp(): void {
   // Finder/Dock launches lack the shell's variables; sync waits for them, the window does not
   const envReady = shellEnvReady()
   registerIpc()
-  prepareLibraryOnStart()
+  if (STARTUP.has('prepareLibrary')) prepareLibraryOnStart()
   createWindow()
-  if (MENU_BAR)
+  if (MENU_BAR && STARTUP.has('tray'))
     setupTray(
       showMainWindow,
       () => recentSessions(10),
@@ -236,25 +240,27 @@ function startApp(): void {
       },
       join(__dirname, '../preload/index.js')
     )
-  if (!TEST_MODE) startUpdateCheck(resolveHome().home)
+  if (!TEST_MODE && STARTUP.has('updateCheck')) startUpdateCheck(resolveHome().home)
   // Sync source -> tools once right after startup (deferred so it does not block showing the window)
   setTimeout(() => {
     void envReady.then(() => {
-      syncOnStart()
-      backupCleanupOnStart()
-      startLibraryWatch()
-      void pullOnStartAndSync()
+      if (STARTUP.has('syncOnStart')) syncOnStart()
+      if (STARTUP.has('backupCleanup')) backupCleanupOnStart()
+      if (STARTUP.has('libraryWatch')) startLibraryWatch()
+      if (STARTUP.has('pullOnStart')) void pullOnStartAndSync()
     })
   }, 500)
   // Content index (worker scans sessions and documents -> incremental index). Slightly delayed to avoid overlapping window display and first reads
-  setTimeout(runSearchIndex, 3000)
+  if (STARTUP.has('searchIndex')) setTimeout(runSearchIndex, 3000)
 
   // Auto backup on quit (once; quits for real when done). Also lets the hidden window close for real
   app.on('before-quit', (e) => {
     if (quitting) return
     quitting = true
     e.preventDefault()
-    void snapshotOnQuit().finally(() => app.quit())
+    void (STARTUP.has('snapshotOnQuit') ? snapshotOnQuit() : Promise.resolve()).finally(() =>
+      app.quit()
+    )
   })
 
   app.on('activate', function () {
