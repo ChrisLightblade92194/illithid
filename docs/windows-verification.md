@@ -71,17 +71,18 @@ Added on branch `codex/linked-skill-import`, on top of the public base `d88c02ad
 
 ### Automated results
 
-The gate ran on code commit `445c5af`, after the review fixes. The documentation commit that follows changes only this file.
+The latest gate ran on code commit `e33d11f`, after the review fixes and the delivery digest fix below. The documentation commit that follows changes only this file.
 
-| Check                        | Observed result                                                                                                       |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Targeted global engine tests | 76/76 passed: 59 existing and 17 linked-skill tests                                                                   |
-| `npm.cmd run test:windows`   | Exit 0, including build and TypeScript checks                                                                         |
-| Portable unit runner         | 128 total: 127 passed, 0 failed, 1 upstream skip (Homebrew cask); 8 deferred-feature files excluded on Windows        |
-| Windows release fixtures     | 4/4 passed                                                                                                            |
-| Electron UI tests            | 8/8 passed, including linked-skill selection and confirmation, and a held preview reply after deselect, Cancel, close |
-| `npm.cmd run lint`           | Exit 0, no errors, the 5 pre-existing warnings in upstream files this change does not touch                           |
-| Prettier and `git diff`      | Changed files formatted; `git diff --check` reports nothing                                                           |
+| Check                      | Observed result                                                                                                       |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Global engine tests        | 80/80 passed within the unit runner: 59 existing and 21 linked-skill tests                                            |
+| `npm.cmd run test:windows` | Exit 0, including build and TypeScript checks                                                                         |
+| Portable unit runner       | 132 total: 131 passed, 0 failed, 1 upstream skip (Homebrew cask); 8 deferred-feature files excluded on Windows        |
+| `npm.cmd test`             | Exit 0; unit runner and the Git, model-stats and session-scan fixtures passed on synthetic profiles                   |
+| Windows release fixtures   | 4/4 passed                                                                                                            |
+| Electron UI tests          | 8/8 passed, including linked-skill selection and confirmation, and a held preview reply after deselect, Cancel, close |
+| `npm.cmd run lint`         | Exit 0, no errors, the 5 pre-existing warnings in upstream files this change does not touch                           |
+| Prettier and `git diff`    | Changed files formatted; `git diff --check` reports nothing                                                           |
 
 The tests ran as a standard user, without elevation. Symbolic-link creation was available on the test machine, so the network-link test ran instead of being skipped.
 
@@ -98,10 +99,22 @@ An independent review of checkpoint `6517364` reported four findings. Each one w
 
 The close-dialog case is also tested. It already passed before the fix, because closing unmounts the dialog. The test remains as a guard.
 
+### Delivery resource digest fix
+
+The review of `5e26bac` reproduced a resource-only variant change that was imported correctly but not delivered. Two variants differing inside `.DS_Store` were assigned the same library revision. Selecting the second variant planned an adoption without copying it: Apply completed and the recipient appeared synced while still containing the first variant's resource.
+
+Three regression tests failed before the fix: the second Apply left the old resource in place, a local resource edit caused no conflict, and a library resource edit after preview did not invalidate Apply. A fourth test protects legacy backup compatibility and already passed before the fix.
+
+The global Windows flow now shares `globalTreeDigest` across ordinary and linked import, library revisions, destination reads, delivery planning, temporary-copy verification, backup and restore. It covers every copied entry and keeps the upstream hash format, so trees without `.DS_Store` retain their digest. Upstream callers of the directory delivery helper retain their existing hash by default; global Windows delivery supplies the complete hash explicitly.
+
+All four tests pass. They verify the actual resource bytes after the second Apply and after restore, refusal of a corrupted backup resource, preservation of a local resource edit, rejection of a stale library preview, and restoration of a legacy backup including its original resources and instructions.
+
+New directory backups record `digestAlgorithm: fullTree-v1`. Backups without that field are verified with their original upstream digest. A new restore preview then binds the complete tree that will be copied. Existing records are not rewritten automatically.
+
 ### Remaining limits
 
 - The checks are separate filesystem reads, not one atomic operation. Checking identity immediately before the copy narrows the window in which another process can change the link, the target, or its folders, but it does not eliminate it: a change between that check and the copy, or during the copy, is caught only by the checks after the copy. During a preview, such a change can still cause a read in the wrong place. The import is then refused when the checks run again.
-- The ordinary import and the delivery comparisons still use the upstream digest, which skips `.DS_Store` entries. This change does not modify them.
+- Existing delivery records or previews made with the old digest can require a new preview and an explicit conflict decision when `.DS_Store` is present. Legacy backup verification retains the original digest's exclusions; new backups verify every entry.
 - The ordinary import channel still ignores keys it does not use. The renderer sends it the listed items, which carry more fields than the selection.
 - In test mode only (`ILLITHID_TEST=1`), the main process exposes its registered IPC handlers so that UI tests can hold a reply.
 - Only local Windows folders are supported. A link whose stored text is a network or device path is refused without being resolved. A mapped network drive letter is recognized only after the link has been resolved, which accesses the share's metadata, and is then refused.
