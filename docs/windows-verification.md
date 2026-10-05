@@ -23,7 +23,7 @@ The Electron tests use synthetic `ILLITHID_HOME` and `ILLITHID_USER_DATA` profil
 
 The restricted sandbox did not support the required filesystem behavior for the full gate. The successful gate ran outside that sandbox on the same checkout, still using synthetic profiles.
 
-## Installer artifact
+## Initial installer artifact
 
 `npm.cmd run build:win` completed with exit 0 from local checkpoint `7080778`. The generated artifact is local and has not been uploaded as a GitHub release.
 
@@ -38,7 +38,7 @@ The restricted sandbox did not support the required filesystem behavior for the 
 
 7-Zip tested the embedded archive successfully (exit 0, 80 files). It reported trailing data in the executable container. Extraction also completed with exit 0. All seven compiled files matched the files extracted from the installer byte for byte. The extracted application executable has PE Machine `0x8664` (x64). The ASAR SHA256 is `bb24edb0c587e7d93bfff23a4a6ac779a4bd4fd8e6f9ebe919a8bf0b9024cb9a`.
 
-## Manual feedback
+## Manual feedback on the initial installer
 
 The user tested the installer on another Windows PC and reported:
 
@@ -48,6 +48,25 @@ The user tested the installer on another Windows PC and reported:
 - Installation and reinstallation work.
 
 These are user-reported manual observations, not independently recorded automated checks. The concrete versions of the three agent tools, their transcripts, and before/after hashes were not collected. Rule-file delivery alone does not demonstrate agent consumption of those rules. The latest installation/reinstallation report does not explicitly establish every uninstall data-retention check.
+
+## Updated installer with linked-skill import
+
+The installer was regenerated from build checkpoint `332d62a09b4f66471f7a2ad20b1f303617be013a`, which includes the linked-import review fixes and the delivery resource digest fix. The only application-packaging change after `1537404` excludes the local design-hook cache; the cache itself was preserved.
+
+Command: `npm.cmd run build:win -- --publish never --config.nsis.artifactName=illithid-0.3.1-windows-332d62a-setup.exe`. Exit 0, including fresh application build and TypeScript checks. No installer was executed or installed, and no artifact was published.
+
+| Property                    | Value                                                              |
+| --------------------------- | ------------------------------------------------------------------ |
+| Filename                    | `illithid-0.3.1-windows-332d62a-setup.exe`                         |
+| Size                        | 119,015,849 bytes                                                  |
+| SHA256                      | `b7b6483f6f024462cf59e8371b8ec60821ac2a8b1d167a74e0863de720995216` |
+| Electron / electron-builder | `39.8.10` / `26.15.3`                                              |
+| Authenticode                | Not signed                                                         |
+| NSIS configuration          | x64 application, per-user, preserves app data on uninstall         |
+
+7-Zip tested and extracted both the executable container and the embedded x64 application archive with exit 0; the application archive contains 80 files. This verification reported no container warnings. All seven compiled files extracted from the actual installer match the fresh `out` files byte for byte. The packaged MIT license matches the source license, including the original copyright notice. Local Git, design-hook and verification metadata are absent from the application archive. The application executable has PE Machine `0x8664` (x64). The ASAR SHA256 is `ab622da0451cd8cdad93caa890b6d66b9233cb1dcd7824fe0e457a13e704660d`.
+
+A checksum sidecar and a local verification manifest accompany the artifact. The version remains `0.3.1`; the filename and checksum distinguish this package from the initial installer. A manual installation/reinstallation and guided-import check on the test PC remain pending.
 
 ## Guided import of linked skills
 
@@ -120,7 +139,7 @@ New directory backups record `digestAlgorithm: fullTree-v1`. Backups without tha
 - Only local Windows folders are supported. A link whose stored text is a network or device path is refused without being resolved. A mapped network drive letter is recognized only after the link has been resolved, which accesses the share's metadata, and is then refused.
 - A link stored in the `\\?\C:\…` form is treated as a device path and refused.
 - Plugin caches, marketplaces, and per-project configurations remain outside this flow.
-- The installer described above predates this change. It has not been regenerated, and no manual test of the guided import has been recorded yet.
+- The updated installer includes this change, but no manual test of its installation or guided import has been recorded yet. Feedback on the initial installer does not verify the new package.
 
 ## Known limitation
 
