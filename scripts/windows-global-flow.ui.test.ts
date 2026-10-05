@@ -84,6 +84,93 @@ async function waitStatus(page: Page, row: string, want: string): Promise<void> 
     .waitFor({ timeout: 15000 })
 }
 
+/** Main-process globals of the IPC wrappers below (test mode exposes the registered handlers) */
+interface IpcProbe {
+  __illithidHandlers?: Record<string, (...a: unknown[]) => Promise<unknown>>
+  __gate: Promise<void> | null
+  __open: (() => void) | null
+  __previewAsked: number
+  __previewDone: number
+  __linkedImports: { linkPath: string }[][]
+}
+
+/**
+ * Re-registers two channels around their real handlers: globalLinkedPreview waits while a gate is held (a delayed
+ * reply), globalLinkedImport records what the renderer actually sends
+ */
+async function probeLinkedChannels(app: ElectronApplication): Promise<void> {
+  await app.evaluate(({ ipcMain }) => {
+    const g = globalThis as unknown as IpcProbe
+    const h = g.__illithidHandlers!
+    g.__gate = null
+    g.__open = null
+    g.__previewAsked = 0
+    g.__previewDone = 0
+    g.__linkedImports = []
+    ipcMain.removeHandler('api:globalLinkedPreview')
+    ipcMain.handle('api:globalLinkedPreview', async (_e, ...a: unknown[]) => {
+      g.__previewAsked++
+      if (g.__gate) await g.__gate
+      try {
+        return await h.globalLinkedPreview(...a)
+      } finally {
+        g.__previewDone++
+      }
+    })
+    ipcMain.removeHandler('api:globalLinkedImport')
+    ipcMain.handle('api:globalLinkedImport', async (_e, ...a: unknown[]) => {
+      g.__linkedImports.push(JSON.parse(JSON.stringify(a[0])))
+      return h.globalLinkedImport(...a)
+    })
+  })
+}
+
+// The functions passed to app.evaluate run in the main process: no named inner functions (tsx would wrap them in a
+// helper that does not exist there)
+const holdPreview = (app: ElectronApplication): Promise<void> =>
+  app.evaluate(() => {
+    const g = globalThis as unknown as IpcProbe
+    g.__gate = new Promise<void>((r) => {
+      g.__open = r
+    })
+  })
+
+const probe = async <K extends keyof IpcProbe>(
+  app: ElectronApplication,
+  key: K
+): Promise<IpcProbe[K]> =>
+  (await app.evaluate(
+    (_e, k: string) => (globalThis as unknown as Record<string, unknown>)[k],
+    key as string
+  )) as IpcProbe[K]
+
+async function until(what: string, check: () => Promise<boolean>): Promise<void> {
+  for (let i = 0; i < 300; i++) {
+    if (await check()) return
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  throw new Error(`timed out waiting for ${what}`)
+}
+
+/** Releases the held preview and returns once its late reply has reached the renderer and React has rendered */
+async function deliverLatePreview(app: ElectronApplication, page: Page, n: number): Promise<void> {
+  await app.evaluate(() => {
+    const g = globalThis as unknown as IpcProbe
+    const open = g.__open
+    g.__gate = null
+    g.__open = null
+    if (open) open()
+  })
+  await until('the delayed preview reply', async () => (await probe(app, '__previewDone')) >= n)
+  // A later round trip on the same IPC pipe: the delayed reply was delivered before it
+  await page.evaluate(() =>
+    (window as unknown as { api: { appVersion: () => Promise<unknown> } }).api.appVersion()
+  )
+  await page.evaluate(
+    () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))))
+  )
+}
+
 test(
   'Windows flow: two same-name skills keep their origins, each tool gets its variant, nothing is written before Apply',
   { timeout: 240000 },
@@ -415,6 +502,140 @@ test(
       assert.deepEqual(snapTools(home), toolsBefore)
       assert.deepEqual(snapshot(shared), sharedBefore)
       assert.equal(existsSync(join(home, 'ran.txt')), false)
+    } finally {
+      await app.close()
+    }
+  }
+)
+
+interface LateHome {
+  home: string
+  shared: string
+  links: string[]
+  toolsBefore: Record<string, Record<string, string>>
+  sharedBefore: Record<string, string>
+}
+
+/** A plain Claude Code skill; caveman (Claude Code) and tidy (Codex) installed as junctions to a shared folder */
+function lateHome(): LateHome {
+  const home = syntheticHome('illithid ui late ')
+  put(home, '.claude/skills/plain/SKILL.md', '---\nname: plain\n---\nplain\n')
+  const shared = join(home, 'shared skills')
+  put(shared, 'caveman/SKILL.md', '---\nname: caveman\n---\nTalk like caveman.\n')
+  put(shared, 'tidy/SKILL.md', '---\nname: tidy\n---\nKeep it tidy.\n')
+  mkdirSync(join(home, '.codex/skills'), { recursive: true })
+  mkdirSync(join(home, '.config/opencode'), { recursive: true })
+  const links = [join(home, '.claude/skills/caveman'), join(home, '.codex/skills/tidy')]
+  symlinkSync(join(shared, 'caveman'), links[0], 'junction')
+  symlinkSync(join(shared, 'tidy'), links[1], 'junction')
+  return { home, shared, links, toolsBefore: snapTools(home), sharedBefore: snapshot(shared) }
+}
+
+/** Opens the import, selects the linked rows and confirms them while the preview reply is held */
+async function confirmHeld(app: ElectronApplication, page: Page, rows: number[]): Promise<void> {
+  const asked = await probe(app, '__previewAsked')
+  await page.getByTestId('open-import').click()
+  for (const i of rows) await page.getByTestId(`linked-check-${i}`).check()
+  await page.getByTestId('linked-review').click()
+  await holdPreview(app)
+  await page.getByTestId('linked-confirm').click()
+  await until('the preview request', async () => (await probe(app, '__previewAsked')) > asked)
+}
+
+const readyRows = (page: Page): Promise<number> =>
+  page.locator('[data-testid="linked-item"][data-ready="true"]').count()
+const sentLinks = async (app: ElectronApplication): Promise<string[][]> =>
+  (await probe(app, '__linkedImports')).map((call) => call.map((s) => s.linkPath))
+const variantNames = (home: string): string[] =>
+  readStoredVariants(home)
+    .variants.map((v) => v.name)
+    .sort()
+
+test(
+  'Windows flow: a late preview reply does not bring back a linked skill deselected meanwhile',
+  { timeout: 240000 },
+  async () => {
+    const l = lateHome()
+    const { app, page } = await launch(l.home)
+    try {
+      await confirmPaths(page)
+      await probeLinkedChannels(app)
+      await confirmHeld(app, page, [0, 1])
+      await page.getByTestId('linked-check-0').uncheck()
+      await deliverLatePreview(app, page, 1)
+      assert.equal(await readyRows(page), 0, 'the late reply brought back a preview')
+      assert.equal(await page.getByTestId('linked-check-0').isChecked(), false)
+      assert.match(await page.getByTestId('import-run').innerText(), /Import 0 selected/)
+      // Tidy alone, confirmed again: only tidy reaches the import
+      await page.getByTestId('linked-review').click()
+      await page.getByTestId('linked-confirm').click()
+      await page.locator('[data-testid="linked-item"][data-ready="true"]').first().waitFor()
+      assert.equal(await readyRows(page), 1)
+      await page.getByTestId('import-select-all').click()
+      assert.match(await page.getByTestId('import-run').innerText(), /Import 2 selected/)
+      await page.getByTestId('import-run').click()
+      await page.getByTestId('import-result').waitFor()
+      assert.deepEqual(await sentLinks(app), [[l.links[1]]])
+      assert.deepEqual(variantNames(l.home), ['plain', 'tidy'])
+      assert.deepEqual(snapTools(l.home), l.toolsBefore)
+      assert.deepEqual(snapshot(l.shared), l.sharedBefore)
+    } finally {
+      await app.close()
+    }
+  }
+)
+
+test(
+  'Windows flow: a late preview reply does not override Cancel',
+  { timeout: 240000 },
+  async () => {
+    const l = lateHome()
+    const { app, page } = await launch(l.home)
+    try {
+      await confirmPaths(page)
+      await probeLinkedChannels(app)
+      await confirmHeld(app, page, [0, 1])
+      await page.getByTestId('linked-cancel').click()
+      await deliverLatePreview(app, page, 1)
+      assert.equal(await readyRows(page), 0, 'the late reply overrode Cancel')
+      assert.equal(await page.getByTestId('linked-confirm-panel').count(), 0)
+      assert.match(await page.getByTestId('import-run').innerText(), /Import 0 selected/)
+      // An ordinary import afterwards sends no linked skill
+      await page.getByTestId('import-select-all').click()
+      await page.getByTestId('import-run').click()
+      await page.getByTestId('import-result').waitFor()
+      assert.deepEqual(await sentLinks(app), [])
+      assert.deepEqual(variantNames(l.home), ['plain'])
+      assert.deepEqual(snapTools(l.home), l.toolsBefore)
+      assert.deepEqual(snapshot(l.shared), l.sharedBefore)
+    } finally {
+      await app.close()
+    }
+  }
+)
+
+test(
+  'Windows flow: a late preview reply after the import was closed changes nothing',
+  { timeout: 240000 },
+  async () => {
+    const l = lateHome()
+    const { app, page } = await launch(l.home)
+    try {
+      await confirmPaths(page)
+      await probeLinkedChannels(app)
+      await confirmHeld(app, page, [0])
+      await page.getByTestId('import-close').click()
+      await page.getByTestId('import-close').waitFor({ state: 'detached' })
+      await deliverLatePreview(app, page, 1)
+      await page.getByTestId('open-import').click()
+      await page.getByTestId('linked-item').first().waitFor()
+      assert.equal(await readyRows(page), 0)
+      assert.equal(await page.getByTestId('linked-check-0').isChecked(), false)
+      await page.getByTestId('import-close').click()
+      assert.deepEqual(await sentLinks(app), [])
+      assert.deepEqual(variantNames(l.home), [])
+      assert.deepEqual(snapTools(l.home), l.toolsBefore)
+      assert.deepEqual(snapshot(l.shared), l.sharedBefore)
     } finally {
       await app.close()
     }

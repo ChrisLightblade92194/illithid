@@ -3,7 +3,7 @@
  * Linked skills (a skill folder that is a link or junction) are listed apart with their target, never preselected and
  * never reached by "Select all": their targets are read only after an explicit confirmation naming every path.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Alert,
   Badge,
@@ -62,36 +62,62 @@ export function ImportDialog({ onClose }: { onClose: () => void }): React.JSX.El
     return n
   }
   const toggle = (i: number): void => setPicked((s) => flip(s, i))
+  // Each preview request gets a number. Deselecting, cancelling or closing moves it on, so a reply that arrives
+  // afterwards is dropped instead of bringing back links the user no longer wants read or imported
+  const previewSeq = useRef(0)
+  const [previewing, setPreviewing] = useState(false)
+  const dropPendingPreview = (): void => {
+    previewSeq.current++
+    setPreviewing(false)
+  }
   // A different selection needs a new confirmation: the previous one covered other links
   const toggleLinked = (i: number): void => {
+    dropPendingPreview()
     setLinkedPicked((s) => flip(s, i))
     setPreview(null)
     setConfirming(false)
   }
+  const cancelConfirmation = (): void => {
+    dropPendingPreview()
+    setConfirming(false)
+  }
+  const close = (): void => {
+    dropPendingPreview()
+    onClose()
+  }
   const chosenLinks = listing ? listing.linked.filter((_, i) => linkedPicked.has(i)) : []
   const readTargets = async (): Promise<void> => {
-    setBusy(true)
+    const seq = ++previewSeq.current
+    setPreviewing(true)
     try {
-      setPreview(
-        await call(
-          window.api.globalLinkedPreview(
-            chosenLinks.map((c) => ({
-              tool: c.tool,
-              linkPath: c.linkPath,
-              targetPath: c.targetPath,
-              linkFingerprint: c.linkFingerprint
-            }))
-          )
+      const r = await call(
+        window.api.globalLinkedPreview(
+          chosenLinks.map((c) => ({
+            tool: c.tool,
+            linkPath: c.linkPath,
+            targetPath: c.targetPath,
+            linkFingerprint: c.linkFingerprint
+          }))
         )
       )
+      if (seq !== previewSeq.current) return
+      setPreview(r)
       setConfirming(false)
     } catch (e) {
-      setError(errorText(e))
+      if (seq === previewSeq.current) setError(errorText(e))
     } finally {
-      setBusy(false)
+      if (seq === previewSeq.current) setPreviewing(false)
     }
   }
-  const ready = preview?.items ?? []
+  // Only previews of links still selected can be imported, whatever reached the state
+  const ready = (preview?.items ?? []).filter((p) =>
+    chosenLinks.some(
+      (c) =>
+        c.linkPath === p.linkPath &&
+        c.targetPath === p.targetPath &&
+        c.linkFingerprint === p.linkFingerprint
+    )
+  )
   const run = async (): Promise<void> => {
     if (!listing) return
     setBusy(true)
@@ -121,7 +147,7 @@ export function ImportDialog({ onClose }: { onClose: () => void }): React.JSX.El
   }
   const count = picked.size + ready.length
   return (
-    <Modal opened onClose={onClose} size="xl" title="Import global rules and skills">
+    <Modal opened onClose={close} size="xl" title="Import global rules and skills">
       <Stack gap="sm">
         <Text size="sm" c="dimmed">
           Only the confirmed tool folders are read. Selected items are copied into the library as
@@ -306,7 +332,7 @@ export function ImportDialog({ onClose }: { onClose: () => void }): React.JSX.El
                           size="xs"
                           variant="default"
                           data-testid="linked-cancel"
-                          onClick={() => setConfirming(false)}
+                          onClick={cancelConfirmation}
                         >
                           Cancel
                         </Button>
@@ -314,7 +340,7 @@ export function ImportDialog({ onClose }: { onClose: () => void }): React.JSX.El
                           size="xs"
                           color="yellow"
                           data-testid="linked-confirm"
-                          loading={busy}
+                          loading={previewing}
                           onClick={() => void readTargets()}
                         >
                           Read {chosenLinks.length} target folder(s)
@@ -356,14 +382,14 @@ export function ImportDialog({ onClose }: { onClose: () => void }): React.JSX.El
           {!result && (
             <Button
               data-testid="import-run"
-              disabled={!count || busy || confirming}
+              disabled={!count || busy || confirming || previewing}
               loading={busy}
               onClick={() => void run()}
             >
               Import {count} selected
             </Button>
           )}
-          <Button variant="default" data-testid="import-close" onClick={onClose}>
+          <Button variant="default" data-testid="import-close" onClick={close}>
             Close
           </Button>
         </Group>
