@@ -86,6 +86,7 @@ export function LibraryView({
                             <Text size="sm">{TOOL_LABEL[o.tool]}</Text>
                             <Text size="xs" ff="monospace" c="dimmed" truncate>
                               {o.path}
+                              {o.linkTarget ? ` → ${o.linkTarget}` : ''}
                             </Text>
                             <Text size="xs" c="dimmed">
                               {o.importedAt.slice(0, 16).replace('T', ' ')}

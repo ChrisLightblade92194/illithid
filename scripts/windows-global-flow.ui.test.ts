@@ -6,11 +6,21 @@
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright-core'
 import { contentSnapshot, denyWrite, put, snapshot, syntheticHome } from './lib/globalFixture'
+import { readStoredVariants } from '../src/engine/globalImport'
+import { globalLibraryDir } from '../src/engine/globalPaths'
 import { readDeliveries } from '../src/engine/globalVariants'
 
 const TOOL_DIRS = ['.claude', '.codex', '.config/opencode']
@@ -310,6 +320,102 @@ test(
       assert.deepEqual(contentSnapshot(join(home, '.codex')), before)
     } finally {
       undo?.()
+      await app.close()
+    }
+  }
+)
+
+test(
+  'Windows flow: linked skills are imported only after an explicit confirmation of every link and target shown',
+  { timeout: 240000 },
+  async () => {
+    const home = syntheticHome('illithid ui linked ')
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x0d, 0x0a, 0x1a])
+    put(home, '.claude/skills/plain/SKILL.md', '---\nname: plain\n---\nplain\n')
+    const shared = join(home, 'shared skills')
+    put(shared, 'caveman/SKILL.md', '---\nname: caveman\n---\nTalk like caveman.\n')
+    put(shared, 'caveman/assets/logo.png', png)
+    put(shared, 'tidy/SKILL.md', '---\nname: tidy\n---\nKeep it tidy.\n')
+    put(shared, 'tidy/scripts/run.cmd', '@echo off\r\necho ran> "%~dp0..\\..\\ran.txt"\r\n')
+    mkdirSync(join(home, '.codex/skills'), { recursive: true })
+    mkdirSync(join(home, '.config/opencode'), { recursive: true })
+    const links = [join(home, '.claude/skills/caveman'), join(home, '.codex/skills/tidy')]
+    symlinkSync(join(shared, 'caveman'), links[0], 'junction')
+    symlinkSync(join(shared, 'tidy'), links[1], 'junction')
+    const targets = [join(shared, 'caveman'), join(shared, 'tidy')].map((p) =>
+      realpathSync.native(p)
+    )
+    const library = (): string[] =>
+      existsSync(globalLibraryDir(home)) ? readdirSync(globalLibraryDir(home)) : []
+    const toolsBefore = snapTools(home)
+    const sharedBefore = snapshot(shared)
+    const { app, page } = await launch(home)
+    try {
+      await confirmPaths(page)
+      await page.getByTestId('open-import').click()
+      const rows = page.getByTestId('linked-item')
+      await rows.first().waitFor()
+      assert.equal(await rows.count(), 2)
+      const rowText = (await rows.allInnerTexts()).join('|')
+      for (const p of [...links, ...targets]) assert.ok(rowText.includes(p), p)
+
+      // Never preselected, never reached by "Select all"
+      await page.getByTestId('import-select-all').click()
+      for (const i of [0, 1])
+        assert.equal(await page.getByTestId(`linked-check-${i}`).isChecked(), false)
+      assert.match(await page.getByTestId('import-run').innerText(), /Import 1 selected/)
+
+      // Multiple selection; the confirmation lists every link and target it covers
+      await page.getByTestId('linked-check-0').check()
+      await page.getByTestId('linked-check-1').check()
+      await page.getByTestId('linked-pending').waitFor()
+      assert.match(await page.getByTestId('import-run').innerText(), /Import 1 selected/)
+      await page.getByTestId('linked-review').click()
+      const panel = page.getByTestId('linked-confirm-panel')
+      await panel.waitFor()
+      const listed = (await panel.getByTestId('linked-confirm-path').allInnerTexts()).join('|')
+      for (const p of [...links, ...targets]) assert.ok(listed.includes(p), p)
+      await page.screenshot({ path: join(shots, '09-linked-confirm.png') })
+
+      // Cancel: nothing read into the library, links and targets unchanged
+      await page.getByTestId('linked-cancel').click()
+      await panel.waitFor({ state: 'detached' })
+      assert.equal(await page.locator('[data-testid="linked-item"][data-ready="true"]').count(), 0)
+      assert.deepEqual(library(), [])
+      assert.deepEqual(snapshot(shared), sharedBefore)
+      assert.deepEqual(snapTools(home), toolsBefore)
+
+      // Confirm: the targets are read (nothing written yet), then imported with the ordinary selection
+      await page.getByTestId('linked-review').click()
+      await page.getByTestId('linked-confirm').click()
+      await page.locator('[data-testid="linked-item"][data-ready="true"]').nth(1).waitFor()
+      assert.deepEqual(library(), [], 'reading the targets wrote into the library')
+      assert.match(await page.getByTestId('import-run').innerText(), /Import 3 selected/)
+      await page.getByTestId('import-run').click()
+      const result = page.getByTestId('import-result')
+      await result.waitFor()
+      assert.match(await result.innerText(), /3 imported, 0 not imported/)
+      await page.screenshot({ path: join(shots, '10-linked-result.png') })
+
+      const variants = readStoredVariants(home).variants
+      assert.deepEqual(variants.map((v) => v.name).sort(), ['caveman', 'plain', 'tidy'])
+      const cave = variants.find((v) => v.name === 'caveman')!
+      assert.deepEqual(
+        [cave.origins[0].tool, cave.origins[0].path, cave.origins[0].linkTarget],
+        ['claude', links[0], targets[0]]
+      )
+      assert.deepEqual(readFileSync(join(cave.dir, 'content/assets/logo.png')), png)
+      const tidy = variants.find((v) => v.name === 'tidy')!
+      assert.deepEqual(
+        [tidy.origins[0].tool, tidy.origins[0].path, tidy.origins[0].linkTarget],
+        ['codex', links[1], targets[1]]
+      )
+      assert.ok(existsSync(join(tidy.dir, 'content/scripts/run.cmd')))
+      // Links, targets and contents as they were; no script ran
+      assert.deepEqual(snapTools(home), toolsBefore)
+      assert.deepEqual(snapshot(shared), sharedBefore)
+      assert.equal(existsSync(join(home, 'ran.txt')), false)
+    } finally {
       await app.close()
     }
   }
