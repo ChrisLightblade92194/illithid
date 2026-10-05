@@ -461,6 +461,56 @@ test('linked skill: content changed after the preview is refused and leaves no p
   assert.deepEqual(libEntries(d.home), [])
 })
 
+test('linked skill: the digest covers every entry that is copied, .DS_Store included', () => {
+  // A change inside .DS_Store after the preview is refused like any other change
+  const a = linkedHome()
+  put(a.target, '.DS_Store/payload.bin', 'v1\n')
+  const ca = confirmOf(listGlobalImportables(a.home, a.paths).linked[0])
+  const pa = previewLinkedSkills(a.home, [ca], a.paths).items[0]
+  writeFileSync(join(a.target, '.DS_Store/payload.bin'), 'v2, changed after the preview\n')
+  assert.notEqual(
+    previewLinkedSkills(a.home, [ca], a.paths).items[0].sourceDigest,
+    pa.sourceDigest,
+    'the preview digest ignores .DS_Store'
+  )
+  const ra = importLinkedSkills(a.home, [{ ...ca, sourceDigest: pa.sourceDigest }], a.paths)
+  assert.deepEqual(
+    ra.errors.map((e) => [e.path, e.code]),
+    [[a.link, 'changedSincePreview']]
+  )
+  assert.deepEqual(ra.items, [])
+  assert.deepEqual(libEntries(a.home), [])
+  assert.equal(readStoredVariants(a.home).variants.length, 0)
+
+  // Unchanged: preview, copy, recorded variant and later checks agree on the same content
+  const b = linkedHome()
+  put(b.target, '.DS_Store/payload.bin', 'v1\n')
+  const cb = confirmOf(listGlobalImportables(b.home, b.paths).linked[0])
+  const pb = previewLinkedSkills(b.home, [cb], b.paths).items[0]
+  const rb = importLinkedSkills(b.home, [{ ...cb, sourceDigest: pb.sourceDigest }], b.paths)
+  assert.deepEqual(rb.errors, [])
+  const s = rb.items[0]
+  assert.equal(readFileSync(join(s.storedPath, '.DS_Store/payload.bin'), 'utf8'), 'v1\n')
+  assert.equal(s.origin.digest, pb.sourceDigest)
+  assert.equal(
+    readStoredVariants(b.home).variants.find((v) => v.id === s.id)!.origins[0].digest,
+    pb.sourceDigest
+  )
+  const again = importLinkedSkills(b.home, [{ ...cb, sourceDigest: pb.sourceDigest }], b.paths)
+  assert.deepEqual(
+    again.errors.map((e) => e.code),
+    ['alreadyImported']
+  )
+  // A later change there is new content: a new preview, a new variant, never "already imported"
+  writeFileSync(join(b.target, '.DS_Store/payload.bin'), 'v2\n')
+  const pb2 = previewLinkedSkills(b.home, [cb], b.paths).items[0]
+  assert.notEqual(pb2.sourceDigest, pb.sourceDigest)
+  const rb2 = importLinkedSkills(b.home, [{ ...cb, sourceDigest: pb2.sourceDigest }], b.paths)
+  assert.deepEqual(rb2.errors, [])
+  assert.equal(readFileSync(join(rb2.items[0].storedPath, '.DS_Store/payload.bin'), 'utf8'), 'v2\n')
+  assert.equal(libEntries(b.home).length, 2)
+})
+
 test('linked skill: a link inside the selected skill is still refused and never followed', () => {
   const { home, target, link, paths } = linkedHome()
   const outside = join(home, 'outside shared')

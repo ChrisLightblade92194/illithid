@@ -658,6 +658,33 @@ function boundCandidate(
   return now
 }
 
+/**
+ * Digest of every entry of a tree, in the format of the upstream dirContentHash (equal to it when no entry is named
+ * .DS_Store). dirContentHash skips .DS_Store entries, which copyTree copies: a linked import binds the preview, the copy
+ * and the recorded origin to this digest instead, so the bytes that are verified are the bytes that are copied.
+ */
+function treeDigest(root: string): string {
+  const h = createHash('sha256')
+  const walk = (dir: string, rel: string): void => {
+    for (const name of readdirSync(dir).sort()) {
+      const p = join(dir, name)
+      const r = rel ? `${rel}/${name}` : name
+      const st = lstatSync(p)
+      if (st.isSymbolicLink()) h.update(`L\0${r}\0${readlinkSync(p)}\0`)
+      else if (st.isDirectory()) {
+        h.update(`D\0${r}\0`)
+        walk(p, r)
+      } else if (st.isFile()) {
+        h.update(`F\0${r}\0`)
+        h.update(readFileSync(p))
+        h.update('\0')
+      }
+    }
+  }
+  walk(root, '')
+  return h.digest('hex')
+}
+
 /** A confirmed target read as a skill: every entry a plain file or folder, SKILL.md present, every file read */
 function readLinkedTarget(
   home: string,
@@ -673,7 +700,7 @@ function readLinkedTarget(
   walkSkill(target, target, problems, md)
   if (problems.length) return { errors: problems }
   try {
-    return { digest: dirContentHash(target), references: skillReferences(home, target, md) }
+    return { digest: treeDigest(target), references: skillReferences(home, target, md) }
   } catch (e) {
     return { errors: [{ path: (e as NodeJS.ErrnoException).path ?? target, code: errCode(e) }] }
   }
@@ -775,7 +802,7 @@ function copyLinkedIn(
     mkdirSync(stored, { recursive: true })
     copyTree(s.targetPath, stored, 'changedSincePreview')
     hooks.afterCopy?.()
-    if (contentDigest('skill', stored) !== s.sourceDigest) return refuse('changedSincePreview')
+    if (treeDigest(stored) !== s.sourceDigest) return refuse('changedSincePreview')
     const after = boundCandidate(paths, s)
     if (!isCandidate(after)) return { errors: [after] }
     const origin: VariantOrigin = {
