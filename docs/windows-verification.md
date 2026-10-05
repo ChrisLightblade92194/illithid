@@ -57,35 +57,53 @@ Added on branch `codex/linked-skill-import`, on top of the public base `d88c02ad
 
 - **Listing:** a skill folder that is itself a symlink or junction under a confirmed `skills` folder is listed apart, with its link path and real target. Before confirmation, the import reads only metadata: the link itself, the target's resolved path, and the target folder's identity. Tests intercept the `fs` calls of every module involved and assert that nothing inside the target is enumerated or read.
 - **Selection and confirmation:** linked skills are never preselected. **Select all** does not include them, and the ordinary import channel refuses a linked folder even when the request carries extra fields such as `allowLinks`. After a multiple selection, the confirmation lists every link and target it covers. Cancelling imports nothing and leaves links and targets unchanged.
-- **Binding checked by the backend:** the backend binds a confirmation to the identity of the link, the stored link text, the resolved target, and the target folder's identity. It derives the candidate again from the confirmed `skills` folder. Its checks run before reading the target, before copying, and after copying, and they refuse the following:
+- **Pending preview:** a preview reply that arrives after the user deselected a linked skill, cancelled the confirmation, or closed the dialog is discarded. The import then sends only previews of links that are still selected.
+- **IPC contract:** the preview channel accepts only `tool`, `linkPath`, `targetPath` and `linkFingerprint`. The linked import channel accepts the same keys plus `sourceDigest`. Both channels refuse any other key, such as `allowLinks`, as `invalid` before reading a target.
+- **Binding checked by the backend:** the backend binds a confirmation to the identity of the link, the stored link text, the resolved target, and the target folder's identity. It derives the candidate again from the confirmed `skills` folder. Its checks run before reading the target, immediately before the copy starts, and after copying, and they refuse the following:
   - a path that was not listed;
   - a link changed after it was shown or confirmed, including one re-pointed to an identical copy, recreated to the same target, or swapped during the copy;
   - a target folder replaced in place;
   - content changed after the preview or during the copy.
-- **Copy:** an approved import through a junction, created and run without administrator rights, copies the whole tree, resources included. The copy is verified against the previewed digest before the variant record is written. The origin records the link and the real target. The link, the target, and its contents stay unchanged, and no script of the skill runs. Variants saved before this change remain readable.
+- **Copy:** an approved import through a junction, created and run without administrator rights, copies the whole tree, resources included. The preview, the check before the copy, the verification of the copy and the recorded origin use one digest that covers every copied entry, `.DS_Store` entries included. The copy is verified against the previewed digest before the variant record is written. The origin records the link and the real target. The link, the target, and its contents stay unchanged, and no script of the skill runs. Variants saved before this change remain readable.
 - **Still refused:** links inside the skill and linked `rules` or `skills` folders. Broken links, cyclic or self-containing links, targets without `SKILL.md`, and network targets get their own codes and readable messages. A network target is refused from the stored link text, before any resolution.
 - **No leftovers:** every refusal or error leaves no provisional folder in the library. The tests cover changed content, an unreadable resource, and a link swapped during the copy.
 - **Delivery:** a linked-origin variant is never delivered back through its link. That destination stays a `link` conflict. Other tools receive a real copy.
 
 ### Automated results
 
-The gate ran on code commit `1bdcc55`. The documentation commit that follows changes only `README.md` and this file.
+The gate ran on code commit `445c5af`, after the review fixes. The documentation commit that follows changes only this file.
 
-| Check                        | Observed result                                                                             |
-| ---------------------------- | ------------------------------------------------------------------------------------------- |
-| Targeted global engine tests | 74/74 passed: 59 existing and 15 new linked-skill tests                                     |
-| `npm.cmd run test:windows`   | Exit 0                                                                                      |
-| Portable unit runner         | 126 total: 125 passed, 0 failed, 1 upstream skip (Homebrew cask)                            |
-| Windows release fixtures     | 4/4 passed                                                                                  |
-| Electron UI tests            | 5/5 passed, including multiple selection, cancel and explicit confirmation of linked skills |
-| `npm.cmd run lint`           | Exit 0, no errors, the 5 pre-existing warnings in upstream files this change does not touch |
-| Prettier                     | Changed files formatted                                                                     |
+| Check                        | Observed result                                                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Targeted global engine tests | 76/76 passed: 59 existing and 17 linked-skill tests                                                                   |
+| `npm.cmd run test:windows`   | Exit 0, including build and TypeScript checks                                                                         |
+| Portable unit runner         | 128 total: 127 passed, 0 failed, 1 upstream skip (Homebrew cask); 8 deferred-feature files excluded on Windows        |
+| Windows release fixtures     | 4/4 passed                                                                                                            |
+| Electron UI tests            | 8/8 passed, including linked-skill selection and confirmation, and a held preview reply after deselect, Cancel, close |
+| `npm.cmd run lint`           | Exit 0, no errors, the 5 pre-existing warnings in upstream files this change does not touch                           |
+| Prettier and `git diff`      | Changed files formatted; `git diff --check` reports nothing                                                           |
 
 The tests ran as a standard user, without elevation. Symbolic-link creation was available on the test machine, so the network-link test ran instead of being skipped.
 
+### Review fixes
+
+An independent review of checkpoint `6517364` reported four findings. Each one was reproduced by a failing test before its fix.
+
+| Finding                                                                                              | Failing test before the fix                                                                                               | Fix                                                                                                                       |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| P1: a late preview reply restored skills that were deselected or cancelled, and the import sent them | Electron UI test with a held IPC reply: 2 skills shown as ready after deselection, and after Cancel, instead of 0         | Every preview request gets a number. Deselection, Cancel and closing advance it, and a stale reply is dropped (`445c5af`) |
+| P2: the digest skipped `.DS_Store` entries that the copy includes                                    | A change in `.DS_Store/payload.bin` after the preview left the preview digest unchanged, and the import accepted it       | The linked import uses a digest of every copied entry (`fc74c23`)                                                         |
+| P2: the identity was not checked again between the last read and the copy                            | A target replaced after the last read (same `SKILL.md`, one extra file) was listed and copied into the provisional folder | Link and target identity are checked immediately before the copy, which then never starts (`2ebebb3`)                     |
+| IPC: extra request keys were silently dropped                                                        | `allowLinks` was accepted by the preview and import channels                                                              | Each channel validates its exact keys and refuses any other key as `invalid` (`e75b655`)                                  |
+
+The close-dialog case is also tested. It already passed before the fix, because closing unmounts the dialog. The test remains as a guard.
+
 ### Remaining limits
 
-- The checks are separate filesystem reads, not one atomic operation. They narrow the window in which another process can change the link, the target, or its folders, but they do not eliminate it. During a preview, such a change can still cause a read in the wrong place. The import is then refused when the checks run again.
+- The checks are separate filesystem reads, not one atomic operation. Checking identity immediately before the copy narrows the window in which another process can change the link, the target, or its folders, but it does not eliminate it: a change between that check and the copy, or during the copy, is caught only by the checks after the copy. During a preview, such a change can still cause a read in the wrong place. The import is then refused when the checks run again.
+- The ordinary import and the delivery comparisons still use the upstream digest, which skips `.DS_Store` entries. This change does not modify them.
+- The ordinary import channel still ignores keys it does not use. The renderer sends it the listed items, which carry more fields than the selection.
+- In test mode only (`ILLITHID_TEST=1`), the main process exposes its registered IPC handlers so that UI tests can hold a reply.
 - Only local Windows folders are supported. A link whose stored text is a network or device path is refused without being resolved. A mapped network drive letter is recognized only after the link has been resolved, which accesses the share's metadata, and is then refused.
 - A link stored in the `\\?\C:\…` form is treated as a device path and refused.
 - Plugin caches, marketplaces, and per-project configurations remain outside this flow.
