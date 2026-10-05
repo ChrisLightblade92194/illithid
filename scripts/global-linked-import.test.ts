@@ -649,19 +649,38 @@ test('linked skill: the IPC channels take only the link, target and fingerprint 
     const x = r as GlobalResult<unknown>
     return x.ok ? null : x.code
   }
-  // Malformed requests are refused before anything is read
-  assert.equal(code(await h.globalLinkedPreview({})), 'invalid')
-  assert.equal(code(await h.globalLinkedPreview([{ ...c, linkFingerprint: 5 }])), 'invalid')
-  assert.equal(code(await h.globalLinkedImport([c])), 'invalid')
-  // Extra fields carry no authority: the request is the confirmation it contains, checked against the disk
-  const widened = (await h.globalLinkedPreview([
-    { ...c, allowLinks: true, targetPath: join(home, 'elsewhere') }
-  ])) as GlobalResult<LinkedSkillPreviewResult>
-  assert.ok(widened.ok)
-  assert.deepEqual(
-    widened.value.errors.map((e) => [e.path, e.code]),
-    [[link, 'linkChanged']]
-  )
+  /** Calls a handler; its body runs synchronously inside the spy, only its result is awaited */
+  const spied = async (fn: () => Promise<unknown>): Promise<{ r: unknown; calls: FsCall[] }> => {
+    const pending = fsCalls(fn)
+    return { r: await pending.value, calls: pending.calls }
+  }
+  const digest = dirContentHash(target)
+  // Malformed requests and requests with keys outside each channel's contract are refused before anything is read
+  const refused: [string, () => Promise<unknown>][] = [
+    ['preview: not a list', () => h.globalLinkedPreview({})],
+    ['preview: wrong type', () => h.globalLinkedPreview([{ ...c, linkFingerprint: 5 }])],
+    ['preview: allowLinks', () => h.globalLinkedPreview([{ ...c, allowLinks: true }])],
+    [
+      'preview: allowLinks and another target',
+      () => h.globalLinkedPreview([{ ...c, allowLinks: true, targetPath: join(home, 'elsewhere') }])
+    ],
+    ['preview: import-only key', () => h.globalLinkedPreview([{ ...c, sourceDigest: digest }])],
+    ['import: digest missing', () => h.globalLinkedImport([c])],
+    [
+      'import: allowLinks',
+      () => h.globalLinkedImport([{ ...c, sourceDigest: digest, allowLinks: true }])
+    ],
+    [
+      'import: linkTarget',
+      () => h.globalLinkedImport([{ ...c, sourceDigest: digest, linkTarget: target }])
+    ]
+  ]
+  for (const [what, fn] of refused) {
+    const { r, calls } = await spied(fn)
+    assert.equal(code(r), 'invalid', what)
+    assert.deepEqual(contentAccess(calls, target), [], what)
+  }
+  assert.deepEqual(libEntries(home), [])
   const pv = (await h.globalLinkedPreview([c])) as GlobalResult<LinkedSkillPreviewResult>
   assert.ok(pv.ok)
   assert.deepEqual(
@@ -669,7 +688,7 @@ test('linked skill: the IPC channels take only the link, target and fingerprint 
     [target]
   )
   const im = (await h.globalLinkedImport([
-    { ...c, sourceDigest: pv.value.items[0].sourceDigest, allowLinks: true }
+    { ...c, sourceDigest: pv.value.items[0].sourceDigest }
   ])) as GlobalResult<GlobalImportResult>
   assert.ok(im.ok)
   assert.deepEqual(

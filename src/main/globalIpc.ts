@@ -73,24 +73,37 @@ function selections(v: unknown): GlobalImportSelection[] {
     }
   })
 }
-/** Linked skills: only the link, target and fingerprint shown are taken; anything else in the request is ignored */
+const CONFIRMATION_KEYS = ['tool', 'linkPath', 'targetPath', 'linkFingerprint']
+const SELECTION_KEYS = [...CONFIRMATION_KEYS, 'sourceDigest']
+
+/** A linked-skill request entry with exactly the keys of its channel: any other key (e.g. allowLinks) is refused */
+function exactKeys(x: unknown, allowed: string[]): Record<string, unknown> {
+  if (typeof x !== 'object' || x === null || Array.isArray(x))
+    throw new BadInput('each entry must be an object')
+  const extra = Object.keys(x).filter((k) => !allowed.includes(k))
+  if (extra.length) throw new BadInput(`unexpected keys: ${extra.join(', ')}`)
+  return x as Record<string, unknown>
+}
+function confirmation(o: Record<string, unknown>): LinkedSkillConfirmation {
+  return {
+    tool: tool(o.tool),
+    linkPath: str(o.linkPath, 'linkPath'),
+    targetPath: str(o.targetPath, 'targetPath'),
+    linkFingerprint: str(o.linkFingerprint, 'linkFingerprint')
+  }
+}
+/** Linked skills, preview: the link, target and fingerprint shown, nothing else */
 function linkConfirmations(v: unknown): LinkedSkillConfirmation[] {
   if (!Array.isArray(v)) throw new BadInput('confirmations must be a list')
-  return v.map((x) => {
-    const o = (x ?? {}) as Record<string, unknown>
-    return {
-      tool: tool(o.tool),
-      linkPath: str(o.linkPath, 'linkPath'),
-      targetPath: str(o.targetPath, 'targetPath'),
-      linkFingerprint: str(o.linkFingerprint, 'linkFingerprint')
-    }
-  })
+  return v.map((x) => confirmation(exactKeys(x, CONFIRMATION_KEYS)))
 }
+/** Linked skills, import: the confirmation and the digest of the preview, nothing else */
 function linkSelections(v: unknown): LinkedSkillSelection[] {
-  return linkConfirmations(v).map((c, i) => ({
-    ...c,
-    sourceDigest: str(((v as unknown[])[i] as Record<string, unknown>).sourceDigest, 'sourceDigest')
-  }))
+  if (!Array.isArray(v)) throw new BadInput('selection must be a list')
+  return v.map((x) => {
+    const o = exactKeys(x, SELECTION_KEYS)
+    return { ...confirmation(o), sourceDigest: str(o.sourceDigest, 'sourceDigest') }
+  })
 }
 function decisions(v: unknown): RestoreDecision[] | undefined {
   if (v === undefined) return undefined
