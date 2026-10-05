@@ -799,6 +799,9 @@ function copyLinkedIn(
   let kept = false
   try {
     hooks.beforeCopy?.()
+    // Link and target identity once more, right before anything is created or copied (metadata only)
+    const before = boundCandidate(paths, s)
+    if (!isCandidate(before)) return { errors: [before] }
     mkdirSync(stored, { recursive: true })
     copyTree(s.targetPath, stored, 'changedSincePreview')
     hooks.afterCopy?.()

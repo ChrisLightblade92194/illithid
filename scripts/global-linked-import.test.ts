@@ -112,7 +112,8 @@ const SPIED = [
   'existsSync',
   'readlinkSync',
   'accessSync',
-  'realpathSync'
+  'realpathSync',
+  'mkdirSync'
 ]
 
 interface FsCall {
@@ -121,7 +122,7 @@ interface FsCall {
 }
 
 /** Runs fn recording every spied fs call (by the engine and by node:fs users alike) with its path argument */
-function fsCalls<T>(fn: () => T): { value: T; calls: FsCall[] } {
+function fsCalls<T>(fn: (calls: FsCall[]) => T): { value: T; calls: FsCall[] } {
   const calls: FsCall[] = []
   const fsm = fs as unknown as Record<string, ((...a: unknown[]) => unknown) & { native?: unknown }>
   const saved = SPIED.map((k) => fsm[k])
@@ -138,7 +139,7 @@ function fsCalls<T>(fn: () => T): { value: T; calls: FsCall[] } {
     return (savedNative as (...x: unknown[]) => unknown)(...a)
   }
   try {
-    return { value: fn(), calls }
+    return { value: fn(calls), calls }
   } finally {
     SPIED.forEach((k, i) => (fsm[k] = saved[i]))
     fs.realpathSync.native = savedNative
@@ -413,6 +414,41 @@ test('linked skill: a link swapped while the copy runs is refused and the provis
     r.errors.map((e) => [e.path, e.code]),
     [[l.link, 'linkChanged']]
   )
+  assert.deepEqual(libEntries(l.home), [])
+})
+
+test('linked skill: a target replaced after the last read is caught right before the copy, which never starts', () => {
+  const l = linkedHome()
+  const c = confirmOf(listGlobalImportables(l.home, l.paths).linked[0])
+  const p = previewLinkedSkills(l.home, [c], l.paths).items[0]
+  const old = join(l.home, 'old caveman')
+  let mark = -1
+  const { value: r, calls } = fsCalls((live) =>
+    importLinkedSkills(l.home, [{ ...c, sourceDigest: p.sourceDigest }], l.paths, {
+      // After the last read of the target: same path, same SKILL.md, plus a file nobody confirmed or previewed
+      beforeCopy: () => {
+        renameSync(l.target, old)
+        mkdirSync(l.target)
+        copyFileSync(join(old, 'SKILL.md'), join(l.target, 'SKILL.md'))
+        writeFileSync(join(l.target, 'unconfirmed.bin'), 'never confirmed\n')
+        mark = live.length
+      }
+    })
+  )
+  assert.ok(mark >= 0, 'the hook runs between the last read and the copy')
+  const after = calls.slice(mark)
+  // The replacement is noticed from metadata only: nothing in it is listed, read or copied
+  assert.deepEqual(contentAccess(after, l.target), [])
+  assert.deepEqual(
+    after.filter((x) => x.fn === 'mkdirSync' || x.fn === 'copyFileSync'),
+    [],
+    'the copy (or its provisional folder) started'
+  )
+  assert.deepEqual(
+    r.errors.map((e) => [e.path, e.code]),
+    [[l.link, 'linkChanged']]
+  )
+  assert.deepEqual(r.items, [])
   assert.deepEqual(libEntries(l.home), [])
 })
 
