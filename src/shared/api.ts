@@ -6,7 +6,10 @@
 import type {
   GlobalImportListing,
   GlobalImportResult,
-  GlobalImportSelection
+  GlobalImportSelection,
+  LinkedSkillConfirmation,
+  LinkedSkillPreviewResult,
+  LinkedSkillSelection
 } from '../engine/globalImport'
 import type { GlobalPathView, GlobalTool } from '../engine/globalPaths'
 import type { GlobalSyncPlan, GlobalSyncResult } from '../engine/globalManualSync'
@@ -910,6 +913,12 @@ export interface Api {
   globalImportables(): Promise<GlobalResult<GlobalImportListing>>
   /** Copies the selected items into the library as new variants; originals are not touched */
   globalImport(selected: GlobalImportSelection[]): Promise<GlobalResult<GlobalImportResult>>
+  /** Reads the targets of the linked skills the user confirmed (bound to the link and target shown); writes nothing */
+  globalLinkedPreview(
+    confirmed: LinkedSkillConfirmation[]
+  ): Promise<GlobalResult<LinkedSkillPreviewResult>>
+  /** Copies previewed linked skills into the library, refused if link, target or content changed */
+  globalLinkedImport(selected: LinkedSkillSelection[]): Promise<GlobalResult<GlobalImportResult>>
   /** Variants grouped by name with each tool's recipient state */
   globalVariants(): Promise<GlobalResult<GlobalLibraryView>>
   /** The variant a tool receives for a name (null = none); the destination is computed by the backend */
@@ -1179,6 +1188,8 @@ export const GLOBAL_CHANNELS = [
   'globalPathsConfirm',
   'globalImportables',
   'globalImport',
+  'globalLinkedPreview',
+  'globalLinkedImport',
   'globalVariants',
   'globalChoiceSet',
   'globalChoiceAccept',

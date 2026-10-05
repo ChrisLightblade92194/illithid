@@ -851,9 +851,13 @@ export function registerIpc(): void {
   }
 
   // Windows first release: channels outside its scope are refused before their handler runs (releaseScope.ts)
-  for (const [channel, fn] of Object.entries(releaseHandlers(process.platform, handlers))) {
+  const registered = releaseHandlers(process.platform, handlers)
+  for (const [channel, fn] of Object.entries(registered)) {
     ipcMain.handle(`api:${channel}`, (_event, ...args) => fn(...args))
   }
+  // Test mode only (ILLITHID_TEST=1): UI tests re-register a channel around its handler to delay or record a reply
+  if (process.env['ILLITHID_TEST'] === '1')
+    (globalThis as { __illithidHandlers?: typeof registered }).__illithidHandlers = registered
   // Synchronous on purpose: the renderer needs language and color scheme before its first render
   ipcMain.on('api:uiPrefsInitial', (event) => {
     try {

@@ -2,10 +2,13 @@
  * Selective import of global rules and skills into the variant library (spec 2026-10-04 §5, §6).
  * - Originals are only read: no move, no retire (no upstream pendingRetire), no ownership transfer.
  * - Links and junctions are never followed: a linked item or a link inside a skill is reported and not importable.
+ *   One exception, the guided import: a skill folder that is itself a link is listed with its target (metadata only),
+ *   and its target is read only after the user confirmed that link and that target (bound by a fingerprint the backend
+ *   checks again before reading, before copying and after copying). Links inside it and linked containers stay refused.
  * - A read error is reported and yields no item; a skill is importable only when every file of its tree was read.
  * - Each import is a new copy with its own id; the variant record (variant.json) is written last, after the copy was
  *   verified against the listed digest, so an interrupted import never looks complete.
- * Digests: rule = sha256 of the bytes; skill = upstream dirContentHash (relative paths + bytes of the whole tree).
+ * Digests: rule = sha256 of the bytes; skill = globalTreeDigest (relative paths + bytes of the complete tree).
  */
 import { createHash, randomBytes } from 'node:crypto'
 import {
@@ -17,8 +20,11 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
-  writeFileSync
+  statSync,
+  writeFileSync,
+  type BigIntStats
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { findSection, parseDestination, readDestination } from './globalDestinations'
@@ -30,7 +36,7 @@ import {
   type GlobalTool
 } from './globalPaths'
 import { deliveryAt, readDeliveries } from './globalVariants'
-import { dirContentHash } from './skills'
+import { globalTreeDigest } from './globalDigest'
 import { atomicWrite } from './write'
 
 export type GlobalKind = 'rule' | 'skill'
@@ -59,17 +65,59 @@ export interface GlobalImportable extends GlobalImportSelection {
 export interface GlobalImportError {
   path: string
   code: string
+  /** Links: where the link points (as resolved, or as stored when it cannot be resolved) */
+  target?: string
+}
+
+/** A skill folder that is itself a link or junction: offered for a guided import, its target never read before */
+export interface LinkedSkillCandidate {
+  tool: GlobalTool
+  /** Folder name under the skills container (the skill's name in the tool) */
+  name: string
+  /** The link or junction itself */
+  linkPath: string
+  /** The local folder it resolves to */
+  targetPath: string
+  /** Identity of the link, its stored target and the target folder when listed: binds a confirmation to them */
+  linkFingerprint: string
+}
+
+/** What the user confirmed: the link and the target shown, with the fingerprint of the listing */
+export type LinkedSkillConfirmation = Pick<
+  LinkedSkillCandidate,
+  'tool' | 'linkPath' | 'targetPath' | 'linkFingerprint'
+>
+
+/** A confirmed target, read and validated as a skill */
+export interface LinkedSkillPreview extends LinkedSkillCandidate {
+  sourceDigest: string
+  references: GlobalReference[]
+}
+
+export interface LinkedSkillPreviewResult {
+  items: LinkedSkillPreview[]
+  errors: GlobalImportError[]
+}
+
+/** An import request: the confirmation and the digest of the preview the user saw */
+export interface LinkedSkillSelection extends LinkedSkillConfirmation {
+  sourceDigest: string
 }
 
 export interface GlobalImportListing {
   items: GlobalImportable[]
+  /** Linked skill folders: importable only through a confirmation (never part of `items`) */
+  linked: LinkedSkillCandidate[]
   errors: GlobalImportError[]
 }
 
 /** Provenance of a variant (the format of VariantRecord.origins) */
 export interface VariantOrigin {
   tool: GlobalTool
+  /** Where the tool has it (for a linked skill: the link) */
   path: string
+  /** Linked skills only: the real folder that was read */
+  linkTarget?: string
   importedAt: string
   digest: string
 }
@@ -108,7 +156,7 @@ export function fileDigest(path: string): string {
 
 /** Digest of a variant or destination content of the given kind */
 export function contentDigest(kind: GlobalKind, path: string): string {
-  return kind === 'rule' ? fileDigest(path) : dirContentHash(path)
+  return kind === 'rule' ? fileDigest(path) : globalTreeDigest(path)
 }
 
 function within(root: string, p: string): boolean {
@@ -233,6 +281,77 @@ export function linkedBelowRoot(root: string, path: string): boolean {
   return false
 }
 
+const isCandidate = (c: LinkedSkillCandidate | GlobalImportError): c is LinkedSkillCandidate =>
+  'linkFingerprint' in c
+
+function fingerprint(
+  tool: GlobalTool,
+  linkPath: string,
+  link: BigIntStats,
+  stored: string,
+  targetPath: string,
+  target: BigIntStats
+): string {
+  const parts = [tool, linkPath, link.dev, link.ino, stored, targetPath, target.dev, target.ino]
+  return createHash('sha256')
+    .update(JSON.stringify(parts.map(String)))
+    .digest('hex')
+}
+
+/**
+ * Metadata of a skill folder that is a link: where it points, never what the target contains. A network or device
+ * target is refused from the stored link text, before any resolution (this release handles local Windows folders only).
+ * The fingerprint covers the identity of the link and of the target folder, so a link recreated, re-pointed (even to
+ * identical content) or a target folder replaced in place no longer matches a confirmation.
+ */
+function inspectLink(tool: GlobalTool, linkPath: string): LinkedSkillCandidate | GlobalImportError {
+  const fail = (code: string, target?: string): GlobalImportError =>
+    target ? { path: linkPath, code, target } : { path: linkPath, code }
+  let link: BigIntStats
+  let stored: string
+  try {
+    link = lstatSync(linkPath, { bigint: true })
+    if (!link.isSymbolicLink()) return fail('notListed')
+    stored = readlinkSync(linkPath)
+  } catch (e) {
+    // A junction to a network share cannot even be read back as a path
+    return fail(errCode(e) === 'EINVAL' ? 'unsupportedLinkTarget' : errCode(e))
+  }
+  if (/^[\\/]{2}/.test(stored)) return fail('unsupportedLinkTarget', stored)
+  let targetPath: string
+  try {
+    targetPath = realpathSync.native(linkPath)
+  } catch (e) {
+    const code = errCode(e)
+    const shown = resolve(dirname(linkPath), stored)
+    if (code === 'ENOENT') return fail('brokenLink', shown)
+    return fail(code === 'ELOOP' ? 'linkCycle' : code, shown)
+  }
+  if (!/^[A-Za-z]:\\/.test(targetPath)) return fail('unsupportedLinkTarget', targetPath)
+  // The target holds the link itself: reading it would come back through the link
+  let parent = dirname(linkPath)
+  try {
+    parent = realpathSync.native(parent)
+  } catch {
+    // keep the path as listed
+  }
+  if (within(targetPath, join(parent, basename(linkPath)))) return fail('linkCycle', targetPath)
+  let target: BigIntStats
+  try {
+    target = statSync(targetPath, { bigint: true })
+  } catch (e) {
+    return fail(errCode(e), targetPath)
+  }
+  if (!target.isDirectory()) return fail('linkTargetNotFolder', targetPath)
+  return {
+    tool,
+    name: basename(linkPath),
+    linkPath,
+    targetPath,
+    linkFingerprint: fingerprint(tool, linkPath, link, stored, targetPath, target)
+  }
+}
+
 function listRuleDir(
   home: string,
   tool: GlobalTool,
@@ -302,7 +421,9 @@ function listSkillDir(
     const st = lstatSync(dir, { throwIfNoEntry: false })
     if (!st) continue
     if (st.isSymbolicLink()) {
-      out.errors.push({ path: dir, code: 'linkedSource' })
+      const c = inspectLink(tool, dir)
+      if (isCandidate(c)) out.linked.push(c)
+      else out.errors.push(c)
       continue
     }
     if (!st.isDirectory()) continue
@@ -318,7 +439,7 @@ function listSkillDir(
     let digest: string
     let references: GlobalReference[]
     try {
-      digest = dirContentHash(dir)
+      digest = globalTreeDigest(dir)
       references = skillReferences(home, dir, md)
     } catch (e) {
       out.errors.push({ path: (e as NodeJS.ErrnoException).path ?? dir, code: errCode(e) })
@@ -333,7 +454,7 @@ export function listGlobalImportables(
   home: string,
   paths: GlobalPathResult[]
 ): GlobalImportListing {
-  const out: GlobalImportListing = { items: [], errors: [] }
+  const out: GlobalImportListing = { items: [], linked: [], errors: [] }
   for (const p of paths) {
     if (p.status !== 'resolved') continue
     const root = p.paths[0]
@@ -376,16 +497,16 @@ export function readStoredVariants(home: string): {
   return { variants, errors }
 }
 
-function copyTree(src: string, dst: string): void {
+function copyTree(src: string, dst: string, changed = 'changedSinceListing'): void {
   for (const n of readdirSync(src)) {
     const s = join(src, n)
     const d = join(dst, n)
     const st = lstatSync(s)
     if (st.isSymbolicLink())
-      throw Object.assign(new Error('link appeared'), { code: 'changedSinceListing', path: s })
+      throw Object.assign(new Error('link appeared'), { code: changed, path: s })
     if (st.isDirectory()) {
       mkdirSync(d)
-      copyTree(s, d)
+      copyTree(s, d, changed)
     } else if (st.isFile()) copyFileSync(s, d, constants.COPYFILE_EXCL)
     else throw Object.assign(new Error('unsupported entry'), { code: 'unsupportedEntry', path: s })
   }
@@ -440,11 +561,7 @@ export function importGlobalItems(
   paths: GlobalPathResult[] = resolveGlobalPaths(home)
 ): GlobalImportResult {
   const listing = listGlobalImportables(home, paths)
-  const known = new Set(
-    readStoredVariants(home).variants.flatMap((v) =>
-      v.origins.map((o) => `${o.tool}\0${o.path}\0${o.digest}`)
-    )
-  )
+  const known = knownOrigins(home)
   const result: GlobalImportResult = { items: [], errors: [] }
   const roots = new Map(
     paths.filter((p) => p.status === 'resolved').map((p) => [p.tool, p.paths[0]])
@@ -471,7 +588,7 @@ export function importGlobalItems(
       result.errors.push({ path: s.sourcePath, code: 'changedSinceListing' })
       continue
     }
-    const key = `${it.tool}\0${it.sourcePath}\0${it.sourceDigest}`
+    const key = originKey(it.tool, it.sourcePath, it.sourceDigest)
     if (known.has(key)) {
       result.errors.push({ path: s.sourcePath, code: 'alreadyImported' })
       continue
@@ -491,6 +608,204 @@ export function importGlobalItems(
     }
   }
   return result
+}
+
+const originKey = (tool: GlobalTool, path: string, digest: string): string =>
+  `${tool}\0${path}\0${digest}`
+
+/** Sources already in the library with the same content (tool, path, digest) */
+function knownOrigins(home: string): Set<string> {
+  return new Set(
+    readStoredVariants(home).variants.flatMap((v) =>
+      v.origins.map((o) => originKey(o.tool, o.path, o.digest))
+    )
+  )
+}
+
+/**
+ * The candidate a confirmation names, derived again from the disk: a link directly under a skills container of a
+ * confirmed root, the container itself not linked. Any other path (a plain folder, a link elsewhere, a path through
+ * `..`) is refused without being inspected.
+ */
+function linkedCandidate(
+  paths: GlobalPathResult[],
+  tool: GlobalTool,
+  linkPath: string
+): LinkedSkillCandidate | GlobalImportError {
+  const notListed = { path: linkPath, code: 'notListed' }
+  const p = paths.find((x) => x.tool === tool && x.status === 'resolved')
+  const name = basename(linkPath)
+  if (!p || !name || name.startsWith('.')) return notListed
+  const root = p.paths[0]
+  const container = NATIVE_LAYOUT[tool].skillDirs
+    .map((d) => join(root, d))
+    .find((c) => join(c, name) === linkPath)
+  if (!container) return notListed
+  if (linkedBelowRoot(root, container)) return { path: container, code: 'linkedSource' }
+  if (!lstatSync(linkPath, { throwIfNoEntry: false })?.isSymbolicLink()) return notListed
+  return inspectLink(tool, linkPath)
+}
+
+/** The candidate, provided the link and its target are still the ones confirmed */
+function boundCandidate(
+  paths: GlobalPathResult[],
+  c: LinkedSkillConfirmation
+): LinkedSkillCandidate | GlobalImportError {
+  const now = linkedCandidate(paths, c.tool, c.linkPath)
+  if (!isCandidate(now)) return now
+  if (now.targetPath !== c.targetPath || now.linkFingerprint !== c.linkFingerprint)
+    return { path: c.linkPath, code: 'linkChanged', target: now.targetPath }
+  return now
+}
+
+/** A confirmed target read as a skill: every entry a plain file or folder, SKILL.md present, every file read */
+function readLinkedTarget(
+  home: string,
+  target: string
+): { digest: string; references: GlobalReference[] } | { errors: GlobalImportError[] } {
+  // Before walking: a confirmed target that is no skill (a whole drive, a home folder) is not enumerated.
+  // A linked SKILL.md is left to the walk, which reports it as a link
+  const skillMd = lstatSync(join(target, 'SKILL.md'), { throwIfNoEntry: false })
+  if (!skillMd || !(skillMd.isFile() || skillMd.isSymbolicLink()))
+    return { errors: [{ path: target, code: 'notASkill' }] }
+  const problems: GlobalImportError[] = []
+  const md: string[] = []
+  walkSkill(target, target, problems, md)
+  if (problems.length) return { errors: problems }
+  try {
+    return { digest: globalTreeDigest(target), references: skillReferences(home, target, md) }
+  } catch (e) {
+    return { errors: [{ path: (e as NodeJS.ErrnoException).path ?? target, code: errCode(e) }] }
+  }
+}
+
+/**
+ * Reads the targets the user confirmed (each bound to the link and target shown) and validates them as skills. Writes
+ * nothing and stores no authorization: the import needs the same confirmation again, with the digest shown here.
+ */
+export function previewLinkedSkills(
+  home: string,
+  confirmed: LinkedSkillConfirmation[],
+  paths: GlobalPathResult[] = resolveGlobalPaths(home)
+): LinkedSkillPreviewResult {
+  const out: LinkedSkillPreviewResult = { items: [], errors: [] }
+  for (const c of confirmed) {
+    const cand = boundCandidate(paths, c)
+    if (!isCandidate(cand)) {
+      out.errors.push(cand)
+      continue
+    }
+    const read = readLinkedTarget(home, cand.targetPath)
+    if ('errors' in read) {
+      out.errors.push(...read.errors)
+      continue
+    }
+    // The link may have been swapped while its target was read
+    const again = boundCandidate(paths, c)
+    if (!isCandidate(again)) {
+      out.errors.push(again)
+      continue
+    }
+    out.items.push({ ...cand, sourceDigest: read.digest, references: read.references })
+  }
+  return out
+}
+
+/** Test hooks around the copy of a linked skill (races between the checks and the copy) */
+export interface LinkedImportHooks {
+  beforeCopy?: () => void
+  afterCopy?: () => void
+}
+
+/**
+ * Imports confirmed and previewed linked skills as new variants. Link, target and content are checked again before the
+ * copy (refused as linkChanged / changedSincePreview), the copy is taken from the target folder and verified against
+ * the previewed digest, and the link is checked once more before the variant record is written. Every refusal or error
+ * removes the provisional folder. The origin keeps the link (logical provenance) and the real target that was read.
+ */
+export function importLinkedSkills(
+  home: string,
+  selected: LinkedSkillSelection[],
+  paths: GlobalPathResult[] = resolveGlobalPaths(home),
+  hooks: LinkedImportHooks = {}
+): GlobalImportResult {
+  const known = knownOrigins(home)
+  const result: GlobalImportResult = { items: [], errors: [] }
+  for (const s of selected) {
+    const cand = boundCandidate(paths, s)
+    if (!isCandidate(cand)) {
+      result.errors.push(cand)
+      continue
+    }
+    const key = originKey(s.tool, s.linkPath, s.sourceDigest)
+    if (known.has(key)) {
+      result.errors.push({ path: s.linkPath, code: 'alreadyImported' })
+      continue
+    }
+    const r = copyLinkedIn(home, paths, s, cand, hooks)
+    if ('errors' in r) result.errors.push(...r.errors)
+    else {
+      result.items.push(r)
+      known.add(key)
+    }
+  }
+  return result
+}
+
+function copyLinkedIn(
+  home: string,
+  paths: GlobalPathResult[],
+  s: LinkedSkillSelection,
+  cand: LinkedSkillCandidate,
+  hooks: LinkedImportHooks
+): ImportedGlobalItem | { errors: GlobalImportError[] } {
+  const refuse = (code: string): { errors: GlobalImportError[] } => ({
+    errors: [{ path: s.linkPath, code }]
+  })
+  // The content as previewed, read before any library folder exists
+  const read = readLinkedTarget(home, s.targetPath)
+  if ('errors' in read) return read
+  if (read.digest !== s.sourceDigest) return refuse('changedSincePreview')
+  const id = `skill-${randomBytes(8).toString('hex')}`
+  const dir = join(globalLibraryDir(home), id)
+  const stored = join(dir, 'content')
+  let kept = false
+  try {
+    hooks.beforeCopy?.()
+    // Link and target identity once more, right before anything is created or copied (metadata only)
+    const before = boundCandidate(paths, s)
+    if (!isCandidate(before)) return { errors: [before] }
+    mkdirSync(stored, { recursive: true })
+    copyTree(s.targetPath, stored, 'changedSincePreview')
+    hooks.afterCopy?.()
+    if (globalTreeDigest(stored) !== s.sourceDigest) return refuse('changedSincePreview')
+    const after = boundCandidate(paths, s)
+    if (!isCandidate(after)) return { errors: [after] }
+    const origin: VariantOrigin = {
+      tool: s.tool,
+      path: s.linkPath,
+      linkTarget: s.targetPath,
+      importedAt: new Date().toISOString(),
+      digest: s.sourceDigest
+    }
+    const record: StoredVariant = {
+      version: 1,
+      id,
+      kind: 'skill',
+      name: cand.name,
+      content: 'content',
+      origins: [origin],
+      references: read.references
+    }
+    atomicWrite(join(dir, VARIANT_FILE), JSON.stringify(record, null, 2) + '\n')
+    kept = true
+    return { id, kind: 'skill', name: cand.name, storedPath: stored, origin }
+  } catch (e) {
+    return { errors: [{ path: (e as NodeJS.ErrnoException).path ?? s.linkPath, code: errCode(e) }] }
+  } finally {
+    // Every exit without a recorded variant (refusal or error) removes the provisional folder
+    if (!kept) rmSync(dir, { recursive: true, force: true })
+  }
 }
 
 /**

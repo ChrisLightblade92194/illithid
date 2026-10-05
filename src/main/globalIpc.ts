@@ -5,9 +5,13 @@
  */
 import {
   importGlobalItems,
+  importLinkedSkills,
   importLocalChange,
   listGlobalImportables,
-  type GlobalImportSelection
+  previewLinkedSkills,
+  type GlobalImportSelection,
+  type LinkedSkillConfirmation,
+  type LinkedSkillSelection
 } from '../engine/globalImport'
 import { applyGlobalSync, planGlobalSync, readStoredPlan } from '../engine/globalManualSync'
 import { listGlobalOperations } from '../engine/globalOperations'
@@ -69,6 +73,38 @@ function selections(v: unknown): GlobalImportSelection[] {
     }
   })
 }
+const CONFIRMATION_KEYS = ['tool', 'linkPath', 'targetPath', 'linkFingerprint']
+const SELECTION_KEYS = [...CONFIRMATION_KEYS, 'sourceDigest']
+
+/** A linked-skill request entry with exactly the keys of its channel: any other key (e.g. allowLinks) is refused */
+function exactKeys(x: unknown, allowed: string[]): Record<string, unknown> {
+  if (typeof x !== 'object' || x === null || Array.isArray(x))
+    throw new BadInput('each entry must be an object')
+  const extra = Object.keys(x).filter((k) => !allowed.includes(k))
+  if (extra.length) throw new BadInput(`unexpected keys: ${extra.join(', ')}`)
+  return x as Record<string, unknown>
+}
+function confirmation(o: Record<string, unknown>): LinkedSkillConfirmation {
+  return {
+    tool: tool(o.tool),
+    linkPath: str(o.linkPath, 'linkPath'),
+    targetPath: str(o.targetPath, 'targetPath'),
+    linkFingerprint: str(o.linkFingerprint, 'linkFingerprint')
+  }
+}
+/** Linked skills, preview: the link, target and fingerprint shown, nothing else */
+function linkConfirmations(v: unknown): LinkedSkillConfirmation[] {
+  if (!Array.isArray(v)) throw new BadInput('confirmations must be a list')
+  return v.map((x) => confirmation(exactKeys(x, CONFIRMATION_KEYS)))
+}
+/** Linked skills, import: the confirmation and the digest of the preview, nothing else */
+function linkSelections(v: unknown): LinkedSkillSelection[] {
+  if (!Array.isArray(v)) throw new BadInput('selection must be a list')
+  return v.map((x) => {
+    const o = exactKeys(x, SELECTION_KEYS)
+    return { ...confirmation(o), sourceDigest: str(o.sourceDigest, 'sourceDigest') }
+  })
+}
 function decisions(v: unknown): RestoreDecision[] | undefined {
   if (v === undefined) return undefined
   if (!Array.isArray(v)) throw new BadInput('decisions must be a list')
@@ -113,6 +149,10 @@ export function globalHandlers(
       }),
     globalImportables: async () => wrap(() => listGlobalImportables(home, paths())),
     globalImport: async (sel) => wrap(() => importGlobalItems(home, selections(sel), paths())),
+    globalLinkedPreview: async (c) =>
+      wrap(() => previewLinkedSkills(home, linkConfirmations(c), paths())),
+    globalLinkedImport: async (s) =>
+      wrap(() => importLinkedSkills(home, linkSelections(s), paths())),
     globalVariants: async () => wrap(() => globalLibraryView(home)),
     globalChoiceSet: async (req) =>
       wrap(() => {

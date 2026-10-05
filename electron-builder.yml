@@ -11,6 +11,7 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
   # Windows port: executor workspace (logs written during builds) and project docs are not app content
   - '!.superpowers{,/**}'
+  - '!.impeccable{,/**}'
   - '!docs/superpowers{,/**}'
   - '!docs/verification{,/**}'
 asarUnpack:
