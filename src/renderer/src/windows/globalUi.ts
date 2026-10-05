@@ -74,7 +74,8 @@ const IMPORT_ERROR_TEXT: Record<string, string> = {
     'Link to a network or device path: only local Windows folders are supported.',
   linkTargetNotFolder: 'The link does not point to a folder.',
   notASkill: 'The target folder has no SKILL.md file.',
-  linkChanged: 'The link or its target changed since it was shown: review it again.',
+  linkChanged:
+    'The link or its target changed since it was shown: close and reopen the import to see them as they are now.',
   changedSincePreview: 'The content changed since it was read: review it again.',
   changedSinceListing: 'The content changed since it was listed: open the import again.',
   notListed: 'Not one of the items listed for import.',

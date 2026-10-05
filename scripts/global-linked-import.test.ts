@@ -559,10 +559,17 @@ test('linked skill: broken, cyclic and self-containing links are reported with t
     listing.linked.map((c) => c.name),
     ['noskill']
   )
-  const pv = previewLinkedSkills(home, [confirmOf(listing.linked[0])], paths)
+  const { value: pv, calls } = fsCalls(() =>
+    previewLinkedSkills(home, [confirmOf(listing.linked[0])], paths)
+  )
   assert.deepEqual(
     pv.errors.map((e) => [e.path, e.code]),
     [[realpathSync.native(plainDir), 'notASkill']]
+  )
+  // A confirmed target without SKILL.md (a whole drive, a home folder) is refused before being walked
+  assert.deepEqual(
+    calls.filter((c) => c.fn === 'readdirSync' || c.fn === 'opendirSync').map((c) => c.path),
+    []
   )
   assert.deepEqual(libEntries(home), [])
 })

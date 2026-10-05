@@ -663,12 +663,15 @@ function readLinkedTarget(
   home: string,
   target: string
 ): { digest: string; references: GlobalReference[] } | { errors: GlobalImportError[] } {
+  // Before walking: a confirmed target that is no skill (a whole drive, a home folder) is not enumerated.
+  // A linked SKILL.md is left to the walk, which reports it as a link
+  const skillMd = lstatSync(join(target, 'SKILL.md'), { throwIfNoEntry: false })
+  if (!skillMd || !(skillMd.isFile() || skillMd.isSymbolicLink()))
+    return { errors: [{ path: target, code: 'notASkill' }] }
   const problems: GlobalImportError[] = []
   const md: string[] = []
   walkSkill(target, target, problems, md)
   if (problems.length) return { errors: problems }
-  if (!lstatSync(join(target, 'SKILL.md'), { throwIfNoEntry: false })?.isFile())
-    return { errors: [{ path: target, code: 'notASkill' }] }
   try {
     return { digest: dirContentHash(target), references: skillReferences(home, target, md) }
   } catch (e) {
