@@ -10,6 +10,7 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   symlinkSync,
   writeFileSync
@@ -162,8 +163,11 @@ test('import_refuses_external_junction: no read or write inside the external tar
       ([p, c]) => p === join(home, '.claude/skills/linked-res/shared') && c === 'externalLink'
     )
   )
-  assert.ok(
-    codes.some(([p, c]) => p === join(home, '.claude/skills/whole-link') && c === 'linkedSource')
+  // A whole linked skill folder is only offered for the guided import: its target is shown, never read here
+  assert.ok(!codes.some(([p]) => p === join(home, '.claude/skills/whole-link')))
+  assert.deepEqual(
+    listing.linked.map((l) => [l.linkPath, l.targetPath]),
+    [[join(home, '.claude/skills/whole-link'), realpathSync.native(outside)]]
   )
   assert.equal(r.items.length, 0)
   assert.deepEqual(

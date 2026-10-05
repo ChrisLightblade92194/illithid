@@ -5,9 +5,13 @@
  */
 import {
   importGlobalItems,
+  importLinkedSkills,
   importLocalChange,
   listGlobalImportables,
-  type GlobalImportSelection
+  previewLinkedSkills,
+  type GlobalImportSelection,
+  type LinkedSkillConfirmation,
+  type LinkedSkillSelection
 } from '../engine/globalImport'
 import { applyGlobalSync, planGlobalSync, readStoredPlan } from '../engine/globalManualSync'
 import { listGlobalOperations } from '../engine/globalOperations'
@@ -69,6 +73,25 @@ function selections(v: unknown): GlobalImportSelection[] {
     }
   })
 }
+/** Linked skills: only the link, target and fingerprint shown are taken; anything else in the request is ignored */
+function linkConfirmations(v: unknown): LinkedSkillConfirmation[] {
+  if (!Array.isArray(v)) throw new BadInput('confirmations must be a list')
+  return v.map((x) => {
+    const o = (x ?? {}) as Record<string, unknown>
+    return {
+      tool: tool(o.tool),
+      linkPath: str(o.linkPath, 'linkPath'),
+      targetPath: str(o.targetPath, 'targetPath'),
+      linkFingerprint: str(o.linkFingerprint, 'linkFingerprint')
+    }
+  })
+}
+function linkSelections(v: unknown): LinkedSkillSelection[] {
+  return linkConfirmations(v).map((c, i) => ({
+    ...c,
+    sourceDigest: str(((v as unknown[])[i] as Record<string, unknown>).sourceDigest, 'sourceDigest')
+  }))
+}
 function decisions(v: unknown): RestoreDecision[] | undefined {
   if (v === undefined) return undefined
   if (!Array.isArray(v)) throw new BadInput('decisions must be a list')
@@ -113,6 +136,10 @@ export function globalHandlers(
       }),
     globalImportables: async () => wrap(() => listGlobalImportables(home, paths())),
     globalImport: async (sel) => wrap(() => importGlobalItems(home, selections(sel), paths())),
+    globalLinkedPreview: async (c) =>
+      wrap(() => previewLinkedSkills(home, linkConfirmations(c), paths())),
+    globalLinkedImport: async (s) =>
+      wrap(() => importLinkedSkills(home, linkSelections(s), paths())),
     globalVariants: async () => wrap(() => globalLibraryView(home)),
     globalChoiceSet: async (req) =>
       wrap(() => {
