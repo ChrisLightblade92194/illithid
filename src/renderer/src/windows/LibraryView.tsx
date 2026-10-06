@@ -101,7 +101,9 @@ export function LibraryView({
                               data-testid="origin-project"
                             >
                               <FolderGit2 size={14} />
-                              <Text size="sm">Project {projectName(o.projectRoot)}</Text>
+                              <Text size="sm" style={{ flexShrink: 0 }}>
+                                Project {projectName(o.projectRoot)}
+                              </Text>
                               <Text size="xs" ff="monospace" c="dimmed" truncate>
                                 {o.relativePath} · {o.projectRoot}
                               </Text>

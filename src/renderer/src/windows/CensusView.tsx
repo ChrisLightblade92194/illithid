@@ -2,7 +2,9 @@
  * Project census (spec 2026-10-06): the user picks a root folder, selects projects by hand and runs a read-only census
  * of their local rules and skills. Results live in this view only: choosing another root, changing the selection,
  * running again, Cancel or leaving the view discards them, cancels a running census, and makes every reply of an
- * earlier request ignored (request generation). Nothing here imports, applies or writes.
+ * earlier request ignored (request generation). The census itself writes nothing; importing selected complete
+ * occurrences into the library is a separate, explicitly confirmed step (ProjectImportDialog). Nothing is selected for
+ * import by running or comparing.
  */
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -17,7 +19,7 @@ import {
   Table,
   Text
 } from '@mantine/core'
-import { FolderOpen, Play, Square } from 'lucide-react'
+import { Download, FolderOpen, Play, Square } from 'lucide-react'
 import type {
   CensusDetails as Details,
   CensusDiscovery,
@@ -28,6 +30,7 @@ import type {
 } from '../../../engine/census/types'
 import { CensusDetails } from './CensusDetails'
 import { call, errorText, TOOL_LABEL } from './globalUi'
+import { ProjectImportDialog, type ImportRow } from './ProjectImportDialog'
 
 type Phase = 'idle' | 'running' | 'completed' | 'cancelled' | 'failed'
 type Category = 'all' | 'equal' | 'sameName' | 'unique' | 'incomplete'
@@ -75,7 +78,12 @@ const OUTCOME_COLOR: Record<CensusItem['outcome'], string> = {
   limitExceeded: 'orange'
 }
 
-export function CensusView(): React.JSX.Element {
+export function CensusView({
+  onImported
+}: {
+  /** Called after an import registered variants (the library must be read again) */
+  onImported?: () => void
+} = {}): React.JSX.Element {
   const [root, setRoot] = useState<string | null>(null)
   const [discovery, setDiscovery] = useState<CensusDiscovery | null>(null)
   const [listing, setListing] = useState(false)
@@ -89,6 +97,9 @@ export function CensusView(): React.JSX.Element {
   const [kind, setKind] = useState<'all' | CensusItem['kind']>('all')
   const [consumer, setConsumer] = useState<'all' | CensusTool>('all')
   const [category, setCategory] = useState<Category>('all')
+  /** Complete items selected for import (ids of the current run only) */
+  const [picked, setPicked] = useState<string[]>([])
+  const [importing, setImporting] = useState(false)
   /** Bumped by every new request and by leaving the view: replies of an older generation are ignored */
   const gen = useRef(0)
   const inspectGen = useRef(0)
@@ -109,6 +120,8 @@ export function CensusView(): React.JSX.Element {
     setDetails(null)
     setProgress(null)
     setError(null)
+    setPicked([])
+    setImporting(false)
     return gen.current
   }
 
@@ -231,8 +244,8 @@ export function CensusView(): React.JSX.Element {
       <Alert variant="light" color="gray">
         Choose a folder, then select the projects to examine: the folder itself and the folders
         directly inside it. Only the selected projects are read, at fixed paths, and nothing is
-        imported, changed or run. Links and junctions are never followed. Results stay in this view
-        until you choose again.
+        changed or run. Links and junctions are never followed. Results stay in this view until you
+        choose again; from them you can import selected occurrences into the library.
       </Alert>
       <Group gap="sm" wrap="nowrap">
         <Button
@@ -362,11 +375,45 @@ export function CensusView(): React.JSX.Element {
           filters={{ project, kind, consumer, category }}
           setFilters={{ setProject, setKind, setConsumer, setCategory }}
           onCompare={(l, r) => void compare(l, r)}
+          picked={picked}
+          onPick={setPicked}
+          onImport={() => setImporting(true)}
+        />
+      )}
+      {result && importing && picked.length > 0 && (
+        <ProjectImportDialog
+          runId={result.runId}
+          rows={importRows(result.snapshot, picked)}
+          onClose={(imported) => {
+            setImporting(false)
+            setPicked([])
+            if (imported) onImported?.()
+          }}
         />
       )}
       {details && <CensusDetails details={details} onClose={closeDetails} />}
     </Stack>
   )
+}
+
+/** The selected occurrences in census order, with their project and group notes */
+function importRows(snapshot: CensusSnapshot, picked: string[]): ImportRow[] {
+  const inEqual = new Set(snapshot.equalGroups.flatMap((g) => g.itemIds))
+  const inName = new Set(snapshot.sameNameDifferences.flatMap((g) => g.itemIds))
+  const name = (id: string): string =>
+    snapshot.projects.find((p) => p.candidateId === id)?.name ?? id
+  return snapshot.items
+    .filter((i) => picked.includes(i.id) && i.outcome === 'complete')
+    .map((i) => ({
+      id: i.id,
+      kind: i.kind,
+      project: name(i.projectId),
+      relativePath: i.relativePath,
+      notes: [
+        ...(inEqual.has(i.id) ? ['equal content elsewhere'] : []),
+        ...(inName.has(i.id) ? ['same name, different content elsewhere'] : [])
+      ]
+    }))
 }
 
 interface Filters {
@@ -381,10 +428,16 @@ function Results({
   snapshot,
   filters,
   setFilters,
-  onCompare
+  onCompare,
+  picked,
+  onPick,
+  onImport
 }: {
   runId: string
   snapshot: CensusSnapshot
+  picked: string[]
+  onPick: (ids: string[]) => void
+  onImport: () => void
   filters: Filters
   setFilters: {
     setProject: (v: string) => void
@@ -623,7 +676,50 @@ function Results({
         </Stack>
       )}
       <Stack gap={4}>
-        <Text fw={600}>Items ({items.length})</Text>
+        <Group justify="space-between" wrap="nowrap">
+          <Text fw={600}>Items ({items.length})</Text>
+          <Group gap="xs" wrap="nowrap">
+            <Button
+              size="compact-sm"
+              variant="subtle"
+              data-testid="census-import-select-all"
+              disabled={!items.some((i) => i.outcome === 'complete')}
+              onClick={() =>
+                onPick([
+                  ...new Set([
+                    ...picked,
+                    ...items.filter((i) => i.outcome === 'complete').map((i) => i.id)
+                  ])
+                ])
+              }
+            >
+              Select all shown
+            </Button>
+            <Button
+              size="compact-sm"
+              variant="subtle"
+              color="gray"
+              data-testid="census-import-clear"
+              disabled={!picked.length}
+              onClick={() => onPick([])}
+            >
+              Clear selection
+            </Button>
+            <Button
+              size="compact-sm"
+              leftSection={<Download size={14} />}
+              data-testid="census-import-open"
+              disabled={!picked.length}
+              onClick={onImport}
+            >
+              Import selected ({picked.length})…
+            </Button>
+          </Group>
+        </Group>
+        <Text size="xs" c="dimmed">
+          Import copies the selected complete rules (whole files) and skills (whole folders) into
+          the library after you confirm; incomplete items cannot be selected. It delivers nothing.
+        </Text>
         {items.length === 0 && (
           <Text size="sm" c="dimmed">
             No item matches these filters.
@@ -641,6 +737,21 @@ function Results({
             data-outcome={i.outcome}
           >
             <Group gap="xs" wrap="nowrap" align="flex-start">
+              <Checkbox
+                size="xs"
+                mt={2}
+                data-testid="census-import-check"
+                aria-label={
+                  'Select ' + projectName(i.projectId) + ' ' + i.relativePath + ' for import'
+                }
+                disabled={i.outcome !== 'complete'}
+                checked={picked.includes(i.id)}
+                onChange={(e) =>
+                  onPick(
+                    e.currentTarget.checked ? [...picked, i.id] : picked.filter((x) => x !== i.id)
+                  )
+                }
+              />
               <Badge size="xs" variant="light">
                 {i.kind}
               </Badge>

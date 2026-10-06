@@ -17,6 +17,7 @@ import type { GlobalOperationRecord } from '../engine/globalOperations'
 import type { RestoreDecision } from '../engine/globalRestore'
 import type { GlobalLibraryView, InspectSide, RecipientRef } from '../engine/globalView'
 import type { CensusDetails, CensusDiscovery, CensusRunView } from '../engine/census/types'
+import type { ProjectJobView } from '../engine/project/types'
 import type {
   PermissionRules,
   AgentDoc,
@@ -975,6 +976,16 @@ export interface Api {
     leftId: string
     rightId: string
   }): Promise<GlobalResult<CensusDetails>>
+  // ---- Windows project import and delivery (spec 2026-10-06 project delivery): backend-issued ids, exact keys
+  /** Imports the selected complete items of the current completed census run into the library (a job) */
+  projectImportStart(req: {
+    runId: string
+    itemIds: string[]
+  }): Promise<GlobalResult<{ jobId: string }>>
+  /** Progress, then the result, of an import or apply job (kept after a cancellation) */
+  projectPoll(req: { jobId: string }): Promise<GlobalResult<ProjectJobView>>
+  /** Asks a running job to stop after its current step; the completed part stays and is reported */
+  projectCancel(req: { jobId: string }): Promise<GlobalResult<ProjectJobView>>
   // ---- library writes (library required. Auto sync after save when allowRealApply)
   toggle(
     kind: ManifestKind,
@@ -1212,6 +1223,9 @@ export const CENSUS_CHANNELS = [
   'censusInspect'
 ] as const
 
+/** Channels of the Windows project import and delivery (exposed by the Windows release; requests with exact keys) */
+export const PROJECT_CHANNELS = ['projectImportStart', 'projectPoll', 'projectCancel'] as const
+
 /** Channels of the Windows global flow (exposed by the Windows release with the census and three app channels) */
 export const GLOBAL_CHANNELS = [
   'globalPaths',
@@ -1237,6 +1251,7 @@ export const GLOBAL_CHANNELS = [
 export const CHANNELS = [
   ...GLOBAL_CHANNELS,
   ...CENSUS_CHANNELS,
+  ...PROJECT_CHANNELS,
   'status',
   'rules',
   'skills',

@@ -2,7 +2,8 @@
  * Windows first release shell (spec 2026-10-04 §2, §11): global rules and skills of Claude Code, Codex and OpenCode,
  * imported selectively and applied by hand after a preview. Deferred features (MCP, secrets, hooks, permissions,
  * memory, sessions, stats, marketplace, git backup, agents) are not offered; there is one apply path only.
- * The project census (spec 2026-10-06) is a separate read-only view: it shows no import or apply action.
+ * The project census (spec 2026-10-06) is a separate view: the census reads only; importing selected occurrences into
+ * the library is an explicit, confirmed step there. It never applies the global flow.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Alert, Box, Button, Group, NavLink, Stack, Text, Title } from '@mantine/core'
@@ -155,7 +156,7 @@ export default function WindowsApp(): React.JSX.Element {
           {menu === 'operations' && (
             <OperationsView onPreview={setPreview} onError={setError} tick={tick} />
           )}
-          {menu === 'census' && <CensusView />}
+          {menu === 'census' && <CensusView onImported={() => void refresh()} />}
         </Stack>
       </Box>
       {importing && (

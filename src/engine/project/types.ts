@@ -127,3 +127,15 @@ export interface ProjectImportHooks {
   onProgress?: (done: number, total: number) => void
   afterRegister?: (index: number) => void | Promise<void>
 }
+
+/** A backend job (import now; apply later) as the renderer polls it */
+export interface ProjectJobView {
+  id: string
+  kind: 'import' | 'apply'
+  status: 'running' | 'completed' | 'cancelled' | 'failed'
+  progress: { done: number; total: number }
+  /** Cancel was asked: the job stops after its current step and still reports what it completed */
+  cancelRequested?: boolean
+  result?: ProjectImportResult
+  reason?: string
+}

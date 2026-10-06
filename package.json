@@ -23,7 +23,7 @@
     "test:unit": "tsx scripts/run-unit-tests.ts",
     "test:fixtures": "tsx scripts/git-fixture.ts && tsx scripts/model-stats-fixture.ts && tsx scripts/session-scan-fixture.ts",
     "test:windows-release": "tsx scripts/windows-release.fixture.ts",
-    "test:windows": "npm run build && npm run test:unit && tsx scripts/windows-release.fixture.ts && tsx --test --test-concurrency=1 scripts/windows-global-flow.ui.test.ts scripts/windows-project-census.ui.test.ts",
+    "test:windows": "npm run build && npm run test:unit && tsx scripts/windows-release.fixture.ts && tsx --test --test-concurrency=1 scripts/windows-global-flow.ui.test.ts scripts/windows-project-census.ui.test.ts scripts/windows-project-delivery.ui.test.ts",
     "test:ui": "electron-vite build && tsx --test --test-concurrency=1 scripts/*.ui.test.ts",
     "test:local": "tsx scripts/apply-fixture.ts && tsx scripts/market-fixture.ts && tsx scripts/m7-fixture.ts",
     "postinstall": "electron-builder install-app-deps",

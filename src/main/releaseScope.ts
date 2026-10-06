@@ -4,7 +4,13 @@
  * marketplace, git backup, subagents) and every automatic write (sync on start, library watch, backup cleanup by age)
  * stay off on win32. Other platforms keep the upstream behavior. No Electron import, so fixtures can load it.
  */
-import { CENSUS_CHANNELS, CHANNELS, GLOBAL_CHANNELS, type Channel } from '../shared/api'
+import {
+  CENSUS_CHANNELS,
+  CHANNELS,
+  GLOBAL_CHANNELS,
+  PROJECT_CHANNELS,
+  type Channel
+} from '../shared/api'
 
 /** Startup work of src/main/index.ts, in upstream order */
 export type StartupTask =
@@ -40,14 +46,15 @@ export function startupTasks(platform: NodeJS.Platform = process.platform): Star
   return isWindowsRelease(platform) ? [] : [...UPSTREAM_STARTUP]
 }
 
-/** IPC channels the Windows release exposes (global flow and read-only project census). Everything else is refused
- * before its handler runs */
+/** IPC channels the Windows release exposes (global flow, read-only project census, project import and delivery).
+ * Everything else is refused before its handler runs */
 const WINDOWS_CHANNELS: readonly Channel[] = [
   'appVersion',
   'uiPrefsSet',
   'pickDirectory',
   ...GLOBAL_CHANNELS,
-  ...CENSUS_CHANNELS
+  ...CENSUS_CHANNELS,
+  ...PROJECT_CHANNELS
 ]
 
 export function releaseChannels(platform: NodeJS.Platform = process.platform): Channel[] {
