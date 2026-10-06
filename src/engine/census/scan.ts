@@ -98,7 +98,7 @@ export interface ScanOptions {
 }
 
 /** Why an item is incomplete; thrown by the readers, caught per item */
-class Incomplete extends Error {
+export class Incomplete extends Error {
   constructor(
     public outcome: Exclude<ItemOutcome, 'complete'>,
     public reason: string,
@@ -110,21 +110,21 @@ class Incomplete extends Error {
 }
 
 /** A filesystem error (errno code) makes one item incomplete; anything else (abort, bugs) ends the census */
-const fsError = (e: unknown): e is NodeJS.ErrnoException =>
+export const fsError = (e: unknown): e is NodeJS.ErrnoException =>
   typeof (e as { code?: unknown } | null)?.code === 'string' && !(e instanceof CensusError)
 
-function incomplete(e: unknown): Incomplete {
+export function incomplete(e: unknown): Incomplete {
   if (e instanceof Incomplete) return e
   if (fsError(e)) return new Incomplete('unreadable', errCode(e))
   throw e
 }
 
 const ordinal = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
-const abs = (project: string, rel: string): string => join(project, ...rel.split('/'))
+export const abs = (project: string, rel: string): string => join(project, ...rel.split('/'))
 const unchanged = (a: BigIntStats, b: BigIntStats): boolean =>
   a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs
 
-interface Listed {
+export interface Listed {
   path: string
   kind: 'dir' | 'file'
   st: BigIntStats
@@ -141,7 +141,11 @@ export interface CensusReader {
     st: BigIntStats,
     onChunk?: (chunk: Buffer) => void
   ): Promise<{ digest: string; bytes: number }>
-  locate(project: string, rel: string): Promise<BigIntStats | null>
+  locate(
+    project: string,
+    rel: string,
+    seen?: (rel: string, st: BigIntStats) => void
+  ): Promise<BigIntStats | null>
 }
 
 /**
@@ -202,7 +206,11 @@ export function createReader(signal: AbortSignal, limits: CensusLimits): CensusR
    * (ENOENT only). A link on the way makes the position incomplete (linkedAncestor), as does the path itself being a
    * link; so does a folder of the path that exists but is not a folder (ancestorNotAFolder), or any other error.
    */
-  async function locate(project: string, rel: string): Promise<BigIntStats | null> {
+  async function locate(
+    project: string,
+    rel: string,
+    seen?: (rel: string, st: BigIntStats) => void
+  ): Promise<BigIntStats | null> {
     const parts = rel.split('/')
     for (let i = 0; i < parts.length; i++) {
       const r = parts.slice(0, i + 1).join('/')
@@ -224,6 +232,7 @@ export function createReader(signal: AbortSignal, limits: CensusLimits): CensusR
           last ? undefined : r,
           await fs.readlink(abs(project, r))
         )
+      seen?.(r, st)
       if (last) return st
       // A file (or other entry) where a folder of the path belongs: present but not valid, so incomplete
       if (!st.isDirectory()) throw new Incomplete('unsupported', 'ancestorNotAFolder', r)
@@ -232,6 +241,124 @@ export function createReader(signal: AbortSignal, limits: CensusLimits): CensusR
   }
 
   return { fs, hashFile, locate }
+}
+
+/** Complete metadata listing of a skill tree, limits enforced; nothing is opened. The first entry is the tree itself */
+export async function listSkillTree(
+  reader: CensusReader,
+  limits: CensusLimits,
+  project: string,
+  rel: string
+): Promise<Listed[]> {
+  const { fs } = reader
+  const out: Listed[] = []
+  let bytes = 0
+  const root = await fs.lstat(abs(project, rel))
+  if (root.isSymbolicLink() || !root.isDirectory())
+    throw new Incomplete('changed', 'changedDuringRead')
+  out.push({ path: '', kind: 'dir', st: root })
+  const walk = async (dirRel: string, depth: number): Promise<void> => {
+    const dir = dirRel ? `${rel}/${dirRel}` : rel
+    let names: string[]
+    try {
+      names = await fs.readdir(abs(project, dir))
+    } catch (e) {
+      const x = incomplete(e)
+      x.problemPath = dir
+      throw x
+    }
+    for (const n of names) {
+      const r = dirRel ? `${dirRel}/${n}` : n
+      const where = `${rel}/${r}`
+      if (depth + 1 > limits.depth) throw new Incomplete('limitExceeded', 'depth', where)
+      if (out.length > limits.skillEntries)
+        throw new Incomplete('limitExceeded', 'skillEntries', where)
+      let st: BigIntStats
+      try {
+        st = await fs.lstat(abs(project, where))
+      } catch (e) {
+        const x = incomplete(e)
+        x.problemPath = where
+        throw x
+      }
+      if (st.isSymbolicLink())
+        throw new Incomplete('linked', 'linkInside', where, await fs.readlink(abs(project, where)))
+      if (st.isDirectory()) {
+        out.push({ path: r, kind: 'dir', st })
+        await walk(r, depth + 1)
+      } else if (st.isFile()) {
+        if (st.size > BigInt(limits.fileBytes))
+          throw new Incomplete('limitExceeded', 'fileBytes', where)
+        bytes += Number(st.size)
+        if (bytes > limits.skillBytes) throw new Incomplete('limitExceeded', 'skillBytes', where)
+        out.push({ path: r, kind: 'file', st })
+      } else throw new Incomplete('unsupported', 'unsupportedEntry', where)
+    }
+  }
+  await walk('', 0)
+  return out
+}
+
+/** Listing signature: path, kind and dev/inode/size/mtime of every entry (any difference is a change) */
+export const listingSignature = (l: readonly Listed[]): string =>
+  l
+    .map((e) => `${e.path}\0${e.kind}\0${e.st.dev}:${e.st.ino}:${e.st.size}:${e.st.mtimeNs}`)
+    .join('\n')
+
+/** Receives a skill tree in listing order (pre-order, ordinal names) while it is hashed: another digest format */
+export interface TreeSink {
+  dir(path: string): void
+  file(path: string): void
+  chunk(chunk: Buffer): void
+  fileEnd(): void
+}
+
+/**
+ * Manifest and census digest of a complete skill tree, or Incomplete: listed, hashed file by file, listed again.
+ * A sink sees the same bytes in listing order, so another complete-tree digest needs no second read.
+ */
+export async function observeSkillTree(
+  reader: CensusReader,
+  limits: CensusLimits,
+  project: string,
+  rel: string,
+  sink?: TreeSink
+): Promise<{ digest: string; manifest: CensusEntry[]; listed: Listed[] }> {
+  const listed = await listSkillTree(reader, limits, project, rel)
+  const manifest: CensusEntry[] = []
+  for (const e of listed.slice(1)) {
+    if (e.kind === 'dir') {
+      sink?.dir(e.path)
+      manifest.push({ path: e.path, kind: 'dir' })
+      continue
+    }
+    try {
+      sink?.file(e.path)
+      const { digest, bytes } = await reader.hashFile(
+        abs(project, `${rel}/${e.path}`),
+        e.st,
+        sink && ((c) => sink.chunk(c))
+      )
+      sink?.fileEnd()
+      manifest.push({ path: e.path, kind: 'file', bytes, digest })
+    } catch (err) {
+      const x = incomplete(err)
+      x.problemPath ??= `${rel}/${e.path}`
+      throw x
+    }
+  }
+  if (
+    listingSignature(await listSkillTree(reader, limits, project, rel)) !== listingSignature(listed)
+  )
+    throw new Incomplete('changed', 'changedDuringRead')
+  manifest.sort((a, b) => ordinal(a.path, b.path))
+  return {
+    digest: createHash('sha256')
+      .update(`census-skill-v1\0${manifestKey(manifest)}`)
+      .digest('hex'),
+    manifest,
+    listed
+  }
 }
 
 export async function scanProjects(
@@ -258,99 +385,8 @@ export async function scanProjects(
   const items: CensusItem[] = []
   const projects: CensusProjectSummary[] = []
 
-  const { fs, hashFile, locate } = createReader(signal, limits)
-
-  /** Complete metadata listing of a skill tree, limits enforced; nothing is opened */
-  async function listSkill(project: string, rel: string): Promise<Listed[]> {
-    const out: Listed[] = []
-    let bytes = 0
-    const root = await fs.lstat(abs(project, rel))
-    if (root.isSymbolicLink() || !root.isDirectory())
-      throw new Incomplete('changed', 'changedDuringRead')
-    out.push({ path: '', kind: 'dir', st: root })
-    const walk = async (dirRel: string, depth: number): Promise<void> => {
-      const dir = dirRel ? `${rel}/${dirRel}` : rel
-      let names: string[]
-      try {
-        names = await fs.readdir(abs(project, dir))
-      } catch (e) {
-        const x = incomplete(e)
-        x.problemPath = dir
-        throw x
-      }
-      for (const n of names) {
-        const r = dirRel ? `${dirRel}/${n}` : n
-        const where = `${rel}/${r}`
-        if (depth + 1 > limits.depth) throw new Incomplete('limitExceeded', 'depth', where)
-        if (out.length > limits.skillEntries)
-          throw new Incomplete('limitExceeded', 'skillEntries', where)
-        let st: BigIntStats
-        try {
-          st = await fs.lstat(abs(project, where))
-        } catch (e) {
-          const x = incomplete(e)
-          x.problemPath = where
-          throw x
-        }
-        if (st.isSymbolicLink())
-          throw new Incomplete(
-            'linked',
-            'linkInside',
-            where,
-            await fs.readlink(abs(project, where))
-          )
-        if (st.isDirectory()) {
-          out.push({ path: r, kind: 'dir', st })
-          await walk(r, depth + 1)
-        } else if (st.isFile()) {
-          if (st.size > BigInt(limits.fileBytes))
-            throw new Incomplete('limitExceeded', 'fileBytes', where)
-          bytes += Number(st.size)
-          if (bytes > limits.skillBytes) throw new Incomplete('limitExceeded', 'skillBytes', where)
-          out.push({ path: r, kind: 'file', st })
-        } else throw new Incomplete('unsupported', 'unsupportedEntry', where)
-      }
-    }
-    await walk('', 0)
-    return out
-  }
-
-  const signature = (l: Listed[]): string =>
-    l
-      .map((e) => `${e.path}\0${e.kind}\0${e.st.dev}:${e.st.ino}:${e.st.size}:${e.st.mtimeNs}`)
-      .join('\n')
-
-  /** Manifest and digest of a complete skill tree, or Incomplete */
-  async function observeSkill(
-    project: string,
-    rel: string
-  ): Promise<{ digest: string; manifest: CensusEntry[] }> {
-    const listed = await listSkill(project, rel)
-    const manifest: CensusEntry[] = []
-    for (const e of listed.slice(1)) {
-      if (e.kind === 'dir') {
-        manifest.push({ path: e.path, kind: 'dir' })
-        continue
-      }
-      try {
-        const { digest, bytes } = await hashFile(abs(project, `${rel}/${e.path}`), e.st)
-        manifest.push({ path: e.path, kind: 'file', bytes, digest })
-      } catch (err) {
-        const x = incomplete(err)
-        x.problemPath ??= `${rel}/${e.path}`
-        throw x
-      }
-    }
-    if (signature(await listSkill(project, rel)) !== signature(listed))
-      throw new Incomplete('changed', 'changedDuringRead')
-    manifest.sort((a, b) => ordinal(a.path, b.path))
-    return {
-      digest: createHash('sha256')
-        .update(`census-skill-v1\0${manifestKey(manifest)}`)
-        .digest('hex'),
-      manifest
-    }
-  }
+  const reader = createReader(signal, limits)
+  const { fs, hashFile, locate } = reader
 
   for (const candidate of selected) {
     signal.throwIfAborted()
@@ -450,7 +486,17 @@ export async function scanProjects(
         else if (md instanceof Incomplete) add('skill', n, r, consumers, md)
         else if (md.isDirectory())
           add('skill', n, r, consumers, new Incomplete('unsupported', 'notASkill'))
-        else add('skill', n, r, consumers, await attempt(() => observeSkill(project, r)))
+        else
+          add(
+            'skill',
+            n,
+            r,
+            consumers,
+            await attempt(async () => {
+              const { digest, manifest } = await observeSkillTree(reader, limits, project, r)
+              return { digest, manifest }
+            })
+          )
       }
     }
 

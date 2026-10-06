@@ -3,6 +3,7 @@ import type { GlobalResult } from '../../../shared/api'
 import type { GlobalTool } from '../../../engine/globalPaths'
 import type { RecipientStatus } from '../../../engine/globalView'
 import type { VariantRecord } from '../../../engine/globalVariants'
+import type { VariantOrigin } from '../../../engine/globalImport'
 
 /** Unwraps a global channel result (throws with the backend code on refusal) */
 export async function call<T>(p: Promise<GlobalResult<T>>): Promise<T> {
@@ -86,8 +87,19 @@ const IMPORT_ERROR_TEXT: Record<string, string> = {
 
 export const importErrorText = (code: string): string | null => IMPORT_ERROR_TEXT[code] ?? null
 
+/** Folder name of a project root (renderer side: no node:path) */
+export const projectName = (root: string): string =>
+  root.split(/[\\/]/).filter(Boolean).pop() ?? root
+
+/** Where a variant came from: a tool's global folder, or a project and its relative path (never a fake tool owner) */
+export function originLabel(o: VariantOrigin): string {
+  return o.scope === 'project'
+    ? `project ${projectName(o.projectRoot)} (${o.relativePath})`
+    : `${TOOL_LABEL[o.tool]} (${o.path})`
+}
+
 /** A variant as listed in choices: name, every origin with its path, short revision (never the name alone) */
 export function variantLabel(v: VariantRecord): string {
-  const origins = v.origins.map((o) => `${TOOL_LABEL[o.tool]} (${o.path})`).join(', ')
+  const origins = v.origins.map(originLabel).join(', ')
   return `${v.name} — from ${origins} · rev ${short(v.revision)}`
 }

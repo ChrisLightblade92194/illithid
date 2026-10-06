@@ -7,16 +7,25 @@ import type { GlobalResult } from '../../../shared/api'
 import type { GlobalKind } from '../../../engine/globalImport'
 import type { GlobalTool } from '../../../engine/globalPaths'
 import type { GlobalLibraryView, RecipientView } from '../../../engine/globalView'
+import { FolderGit2 } from 'lucide-react'
+import type { VariantOrigin } from '../../../engine/globalImport'
 import { ToolIcon } from '../components/ToolIcon'
 import {
   call,
   errorText,
+  projectName,
   short,
   STATUS_COLOR,
   STATUS_LABEL,
   TOOL_LABEL,
   variantLabel
 } from './globalUi'
+
+/** React key of an origin (renderer side; the engine's originKey needs no import here) */
+const originKeyOf = (o: VariantOrigin): string =>
+  o.scope === 'project'
+    ? `project:${o.projectRoot}:${o.relativePath}:${o.digest}`
+    : `global:${o.tool}:${o.path}:${o.digest}`
 
 export function LibraryView({
   kind,
@@ -73,26 +82,50 @@ export function LibraryView({
                     p="xs"
                     bg="var(--ac-surface-hover)"
                     data-variant-id={id}
-                    data-origin-tools={v.origins.map((o) => o.tool).join(',')}
+                    data-origin-tools={v.origins
+                      .flatMap((o) => (o.scope === 'project' ? [] : [o.tool]))
+                      .join(',')}
+                    data-origin-scopes={v.origins.map((o) => o.scope ?? 'global').join(',')}
                   >
                     <Group gap="xs" wrap="nowrap" align="flex-start">
                       <Badge variant="outline" color="gray" ff="monospace">
                         {short(id.split('-')[1], 6)}
                       </Badge>
                       <Stack gap={2} style={{ minWidth: 0 }}>
-                        {v.origins.map((o) => (
-                          <Group key={`${o.tool}${o.path}`} gap={6} wrap="nowrap">
-                            <ToolIcon tool={o.tool} size={14} />
-                            <Text size="sm">{TOOL_LABEL[o.tool]}</Text>
-                            <Text size="xs" ff="monospace" c="dimmed" truncate>
-                              {o.path}
-                              {o.linkTarget ? ` → ${o.linkTarget}` : ''}
-                            </Text>
-                            <Text size="xs" c="dimmed">
-                              {o.importedAt.slice(0, 16).replace('T', ' ')}
-                            </Text>
-                          </Group>
-                        ))}
+                        {v.origins.map((o) =>
+                          o.scope === 'project' ? (
+                            <Group
+                              key={originKeyOf(o)}
+                              gap={6}
+                              wrap="nowrap"
+                              data-testid="origin-project"
+                            >
+                              <FolderGit2 size={14} />
+                              <Text size="sm">Project {projectName(o.projectRoot)}</Text>
+                              <Text size="xs" ff="monospace" c="dimmed" truncate>
+                                {o.relativePath} · {o.projectRoot}
+                              </Text>
+                              <Text size="xs" c="dimmed">
+                                {o.consumers.length
+                                  ? `named by ${o.consumers.map((t) => TOOL_LABEL[t]).join(', ')} conventions · `
+                                  : ''}
+                                {o.importedAt.slice(0, 16).replace('T', ' ')}
+                              </Text>
+                            </Group>
+                          ) : (
+                            <Group key={originKeyOf(o)} gap={6} wrap="nowrap">
+                              <ToolIcon tool={o.tool} size={14} />
+                              <Text size="sm">{TOOL_LABEL[o.tool]}</Text>
+                              <Text size="xs" ff="monospace" c="dimmed" truncate>
+                                {o.path}
+                                {o.linkTarget ? ` → ${o.linkTarget}` : ''}
+                              </Text>
+                              <Text size="xs" c="dimmed">
+                                {o.importedAt.slice(0, 16).replace('T', ' ')}
+                              </Text>
+                            </Group>
+                          )
+                        )}
                         <Text size="xs" c="dimmed">
                           revision {short(v.revision, 12)}
                           {v.references.length

@@ -37,6 +37,7 @@ import {
 } from './globalPaths'
 import { deliveryAt, readDeliveries } from './globalVariants'
 import { globalTreeDigest } from './globalDigest'
+import type { ProjectOrigin } from './project/types'
 import { atomicWrite } from './write'
 
 export type GlobalKind = 'rule' | 'skill'
@@ -111,8 +112,9 @@ export interface GlobalImportListing {
   errors: GlobalImportError[]
 }
 
-/** Provenance of a variant (the format of VariantRecord.origins) */
-export interface VariantOrigin {
+/** Provenance of a variant imported from a global tool root (legacy records carry no scope: they are global) */
+export interface GlobalOrigin {
+  scope?: 'global'
   tool: GlobalTool
   /** Where the tool has it (for a linked skill: the link) */
   path: string
@@ -122,13 +124,16 @@ export interface VariantOrigin {
   digest: string
 }
 
+/** Provenance of a variant (the format of VariantRecord.origins): a global tool root or a project */
+export type VariantOrigin = GlobalOrigin | ProjectOrigin
+
 export interface ImportedGlobalItem {
   id: string
   kind: GlobalKind
   name: string
   /** Rule: the copied file; skill: the copied folder */
   storedPath: string
-  origin: VariantOrigin
+  origin: GlobalOrigin
 }
 
 export interface GlobalImportResult {
@@ -528,7 +533,7 @@ function copyIn(home: string, it: GlobalImportable): ImportedGlobalItem {
         code: 'changedSinceListing',
         path: it.sourcePath
       })
-    const origin: VariantOrigin = {
+    const origin: GlobalOrigin = {
       tool: it.tool,
       path: it.sourcePath,
       importedAt: new Date().toISOString(),
@@ -588,7 +593,7 @@ export function importGlobalItems(
       result.errors.push({ path: s.sourcePath, code: 'changedSinceListing' })
       continue
     }
-    const key = originKey(it.tool, it.sourcePath, it.sourceDigest)
+    const key = legacyOriginKey(it.tool, it.sourcePath, it.sourceDigest)
     if (known.has(key)) {
       result.errors.push({ path: s.sourcePath, code: 'alreadyImported' })
       continue
@@ -610,16 +615,29 @@ export function importGlobalItems(
   return result
 }
 
-const originKey = (tool: GlobalTool, path: string, digest: string): string =>
-  `${tool}\0${path}\0${digest}`
+const legacyOriginKey = (tool: GlobalTool, path: string, digest: string): string =>
+  originKey({ tool, path, digest, importedAt: '' })
 
-/** Sources already in the library with the same content (tool, path, digest) */
-function knownOrigins(home: string): Set<string> {
-  return new Set(
-    readStoredVariants(home).variants.flatMap((v) =>
-      v.origins.map((o) => originKey(o.tool, o.path, o.digest))
-    )
-  )
+/**
+ * Identity of an origin: scope, path and digest format, so a project origin never equals a global one. A global key
+ * keeps the tool, path and digest of the legacy key; its digest format is implied by the variant kind.
+ */
+export function originKey(o: VariantOrigin): string {
+  return o.scope === 'project'
+    ? JSON.stringify([
+        'project',
+        o.projectRoot,
+        o.relativePath,
+        o.path,
+        o.digestAlgorithm,
+        o.digest
+      ])
+    : JSON.stringify(['global', o.tool, o.path, 'legacy', o.digest])
+}
+
+/** Sources already in the library with the same content (scope, path, digest format and digest) */
+export function knownOrigins(home: string): Set<string> {
+  return new Set(readStoredVariants(home).variants.flatMap((v) => v.origins.map(originKey)))
 }
 
 /**
@@ -737,7 +755,7 @@ export function importLinkedSkills(
       result.errors.push(cand)
       continue
     }
-    const key = originKey(s.tool, s.linkPath, s.sourceDigest)
+    const key = legacyOriginKey(s.tool, s.linkPath, s.sourceDigest)
     if (known.has(key)) {
       result.errors.push({ path: s.linkPath, code: 'alreadyImported' })
       continue
@@ -781,7 +799,7 @@ function copyLinkedIn(
     if (globalTreeDigest(stored) !== s.sourceDigest) return refuse('changedSincePreview')
     const after = boundCandidate(paths, s)
     if (!isCandidate(after)) return { errors: [after] }
-    const origin: VariantOrigin = {
+    const origin: GlobalOrigin = {
       tool: s.tool,
       path: s.linkPath,
       linkTarget: s.targetPath,
@@ -865,7 +883,7 @@ export function importLocalChange(
     }
     const digest = contentDigest(kind, join(dir, rel))
     if (digest !== expectedDigest) return { ok: false, code: 'changedSinceCheck' }
-    const origin: VariantOrigin = {
+    const origin: GlobalOrigin = {
       tool,
       path: destination,
       importedAt: new Date().toISOString(),

@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   contentDigest,
+  originKey,
   readStoredVariants,
   VARIANT_FILE,
   type GlobalKind,
@@ -180,7 +181,7 @@ export function mergeGlobalVariants(
   const origins = [keep, ...rest]
     .flatMap((v) => v.origins)
     .filter((o) => {
-      const k = `${o.tool}\0${o.path}\0${o.digest}`
+      const k = originKey(o)
       if (seen.has(k)) return false
       seen.add(k)
       return true
