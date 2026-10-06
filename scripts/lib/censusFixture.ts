@@ -29,7 +29,7 @@ export function syntheticGlobalState(base: string): string {
   put(home, '.codex/AGENTS.md', '# global codex\n')
   put(home, '.config/opencode/AGENTS.md', '# global opencode\n')
   put(home, '.illithid/global/variants/v1/variant.json', '{"version":1}\n')
-  put(home, '.config/illithid/global/deliveries.json', '{"version":1,"deliveries":[]}\n')
+  put(home, '.config/illithid/global/deliveries.json', '{"version":1,"entries":[]}\n')
   return home
 }
 

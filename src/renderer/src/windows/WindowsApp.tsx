@@ -2,14 +2,16 @@
  * Windows first release shell (spec 2026-10-04 §2, §11): global rules and skills of Claude Code, Codex and OpenCode,
  * imported selectively and applied by hand after a preview. Deferred features (MCP, secrets, hooks, permissions,
  * memory, sessions, stats, marketplace, git backup, agents) are not offered; there is one apply path only.
+ * The project census (spec 2026-10-06) is a separate read-only view: it shows no import or apply action.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Alert, Box, Button, Group, NavLink, Stack, Text, Title } from '@mantine/core'
-import { BookOpen, Download, Eye, FolderCog, History, Sparkles } from 'lucide-react'
+import { BookOpen, Download, Eye, FolderCog, FolderSearch, History, Sparkles } from 'lucide-react'
 import type { GlobalKind } from '../../../engine/globalImport'
 import type { GlobalSyncPlan } from '../../../engine/globalManualSync'
 import type { GlobalTool } from '../../../engine/globalPaths'
 import type { GlobalLibraryView, RecipientView } from '../../../engine/globalView'
+import { CensusView } from './CensusView'
 import { ConflictDialog } from './ConflictDialog'
 import { ImportDialog } from './ImportDialog'
 import { LibraryView } from './LibraryView'
@@ -18,13 +20,14 @@ import { PathsView } from './PathsView'
 import { PreviewDialog } from './PreviewDialog'
 import { call, errorText } from './globalUi'
 
-type Menu = 'rules' | 'skills' | 'operations' | 'paths'
+type Menu = 'rules' | 'skills' | 'operations' | 'paths' | 'census'
 
 const MENUS: { id: Menu; label: string; icon: React.ReactNode }[] = [
   { id: 'rules', label: 'Rules', icon: <BookOpen size={16} /> },
   { id: 'skills', label: 'Skills', icon: <Sparkles size={16} /> },
   { id: 'operations', label: 'Operations & restore', icon: <History size={16} /> },
-  { id: 'paths', label: 'Tool folders', icon: <FolderCog size={16} /> }
+  { id: 'paths', label: 'Tool folders', icon: <FolderCog size={16} /> },
+  { id: 'census', label: 'Project census', icon: <FolderSearch size={16} /> }
 ]
 
 export default function WindowsApp(): React.JSX.Element {
@@ -58,6 +61,8 @@ export default function WindowsApp(): React.JSX.Element {
     }
   }, [])
   const unconfirmed = view ? view.paths.every((p) => !p.confirmed) : false
+  // Global import and apply belong to the global views only, never to the read-only census
+  const globalMenu = menu !== 'census'
   const openPreview = async (): Promise<void> => {
     try {
       setPreview(await call(window.api.globalPlan()))
@@ -93,7 +98,7 @@ export default function WindowsApp(): React.JSX.Element {
         ))}
         <Text size="xs" c="dimmed" mt="xl">
           Not part of this release: MCP, secrets, hooks, permissions, memory, sessions, statistics,
-          marketplace, per-project settings and automatic sync.
+          marketplace, delivery to projects and automatic sync.
         </Text>
       </Box>
       <Box component="main" p="md" style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
@@ -104,23 +109,25 @@ export default function WindowsApp(): React.JSX.Element {
           style={{ borderBottom: '1px solid var(--ac-border-subtle)' }}
         >
           <Title order={2}>{MENUS.find((m) => m.id === menu)!.label}</Title>
-          <Group gap="xs">
-            <Button
-              variant="default"
-              leftSection={<Download size={14} />}
-              data-testid="open-import"
-              onClick={() => setImporting(true)}
-            >
-              Import…
-            </Button>
-            <Button
-              leftSection={<Eye size={14} />}
-              data-testid="open-preview"
-              onClick={() => void openPreview()}
-            >
-              Preview & apply…
-            </Button>
-          </Group>
+          {globalMenu && (
+            <Group gap="xs">
+              <Button
+                variant="default"
+                leftSection={<Download size={14} />}
+                data-testid="open-import"
+                onClick={() => setImporting(true)}
+              >
+                Import…
+              </Button>
+              <Button
+                leftSection={<Eye size={14} />}
+                data-testid="open-preview"
+                onClick={() => void openPreview()}
+              >
+                Preview & apply…
+              </Button>
+            </Group>
+          )}
         </Group>
         <Stack gap="sm">
           {error && (
@@ -128,7 +135,7 @@ export default function WindowsApp(): React.JSX.Element {
               {error}
             </Alert>
           )}
-          {unconfirmed && menu !== 'paths' && (
+          {unconfirmed && globalMenu && menu !== 'paths' && (
             <Alert color="blue" variant="light">
               No tool folder is confirmed yet: open “Tool folders” before importing or applying.
             </Alert>
@@ -148,6 +155,7 @@ export default function WindowsApp(): React.JSX.Element {
           {menu === 'operations' && (
             <OperationsView onPreview={setPreview} onError={setError} tick={tick} />
           )}
+          {menu === 'census' && <CensusView />}
         </Stack>
       </Box>
       {importing && (

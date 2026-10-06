@@ -153,6 +153,51 @@ New directory backups record `digestAlgorithm: fullTree-v1`. Backups without tha
 - Plugin caches, marketplaces, and per-project configurations remain outside this flow.
 - The updated installer has user-reported linked-import and tool-discovery feedback, including an OpenCode invocation that applied the skill. Its separate installation/reinstallation and Cancel checks were not explicitly reported.
 
+## Project census
+
+Date: 2026-10-06. Branch `codex/project-census`, started from the documentation checkpoint `5be3e62` (spec `docs/superpowers/specs/2026-10-06-project-census-design.md`, plan `docs/superpowers/plans/2026-10-06-project-census.md`). The application base is `80e8c24`. The census is a read-only view; it adds no import, delivery, persistence, watcher or startup work. No installer was built for it, and the published installer remains the baseline.
+
+### Behavior verified
+
+- **Discovery:** the candidates are the chosen root and its immediate folders, listed from folder metadata only. The tests intercept the `fs.promises`, synchronous and callback `fs` calls of every module. A positive control observes the production enumeration of the root. Nothing inside a candidate is enumerated or read, and grandchildren are not examined. Linked and unreadable folders stay visible with their reason. Order is deterministic, including spaces, non-ASCII names and, in a case-sensitive folder, `Proj` and `proj` as two candidates.
+- **Selection:** unknown, foreign, duplicate, linked or unreadable ids are refused before any filesystem access. Each binding records the identity of every folder from the filesystem root to the candidate. A project, the root or an ancestor that is replaced is refused before any read, even when it is recreated with identical contents or becomes a junction to the same folder.
+- **Coverage:** a positive control shows that a production scan opens exactly the covered files of the selected projects. Unselected projects, nested `src/AGENTS.md`, non-`.md` files in `.claude/rules` and folders without `SKILL.md` are not read. A shared path is one item with several potential consumers.
+- **Comparison:** rules are compared byte for byte, so a CRLF version differs from an LF version. Skills are compared by complete manifest: paths, folders, lengths and per-file digests, with the outer name excluded. Empty folders, hidden files and `.DS_Store/payload.bin` change the manifest. Reversed directory listings do not change any result.
+- **Incomplete items:** links in ancestors, containers, rules, skill folders and skill contents are reported with their stored text, and their targets are never touched. Unreadable (injected and ACL-denied), changed-during-read and over-limit items carry no digest and join no group. Other items keep their results. An empty project and an unreadable one are reported differently.
+- **Limits:** each limit is tested at and above its threshold: 64 MiB per file, 256 MiB and 10,000 entries per skill, and 64 levels. The default values are also tested, using extended files. Nothing over a limit is opened. Two skills that would match only after truncation are both incomplete.
+- **IPC:** requests are single objects with exact keys. Extra keys such as `allowLinks`, paths given as ids, copied ids and empty selections are refused before any configuration read. Non-Windows platforms refuse every census channel without filesystem access. In the IPC tests, a real scan with a held reply cannot expose its snapshot after Cancel, a newer start or a new discovery. An asynchronous scanner failure becomes a failed run without an unhandled rejection.
+- **Details:** they accept only two different complete items of one kind from the completed current run. Rule details recheck project identity and the full-content digest, and refuse a rule edited since the census. They show at most 200 KiB per side, cut on a character boundary. The labels cover encoding (UTF-8, UTF-8/UTF-16 with BOM, or unrecognized, which is not decoded), line endings and truncation. Skill details compare the cached manifests without any filesystem access.
+- **Windows view:** the Electron tests use the real registered handlers, a synthetic profile and synthetic project trees. They cover the root choice, the one-level candidate list with nothing preselected, and the exact candidate ids received by the backend. They also cover counts, coverage, the project, kind, consumer and category filters, an equal-content group across names, same-name differences for a rule and a skill, rule texts side by side and skill resource differences. Held replies after Cancel, a selection change, a newer run, a root change or leaving the view never show obsolete candidates, results or details. The backend receives the cancellation of the previous run. Projects, global tool folders, the library and delivery state stay unchanged, and the census view shows no Import or Apply action.
+
+Each behavior was first reproduced by a failing test: 8/8 discovery tests, 18/18 inventory and comparison tests, 11/11 IPC tests, the extended release fixture and 3/3 Electron tests failed before their implementation. One comparison test passed before its implementation because it compared two empty scans. It was strengthened until it failed. A mutation check that removed the generation guard from census polling made the late-reply UI test fail.
+
+### Automated results
+
+The gate ran on the final Task 4 changes on `codex/project-census`, before they were committed with this document.
+
+| Check                      | Observed result                                                                                                      |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `npm.cmd run test:windows` | Exit 0, including build and TypeScript checks                                                                        |
+| Portable unit runner       | 169 total: 168 passed, 0 failed, 1 upstream skip (Homebrew cask); 8 deferred-feature files excluded; 37 census tests |
+| Windows release fixtures   | 5/5 passed, including the exact Windows allowlist with the five census channels                                      |
+| Electron UI tests          | 11/11 passed: the 8 existing global-flow tests and 3 census tests                                                    |
+| `npm.cmd test`             | Exit 0; unit runner as above; the Git, model-stats and session-scan fixtures passed                                  |
+| `npm.cmd run lint`         | Exit 0, no errors, the 5 pre-existing warnings in upstream files this change does not touch                          |
+| Prettier and `git diff`    | All 21 changed files formatted; `git diff --check` reports nothing                                                   |
+
+The tests ran as a standard user, without elevation. Junction, file-symlink (Developer Mode was available), ACL-denial and per-folder case-sensitivity tests ran; none was skipped. Node emitted its experimental SQLite warning.
+
+### Remaining limits
+
+- Manual acceptance of the census in an installed build has not been performed. No census installer exists.
+- The identity and change checks are separate filesystem reads, not one atomic operation. A file is compared by identity, length and modification time before and after its read, and a skill is listed again after it is hashed. A change that keeps length and modification time during the read is not detected.
+- A root on a mapped network drive is refused when its resolved path is a network path. No mapped drive was available to test this.
+- Encoding and line-ending labels describe the part shown in the preview (at most 200 KiB). Equality always covers the whole file.
+- A link or unreadable folder above several covered paths, such as a linked `.claude`, produces one incomplete item per covered path.
+- Files in `.claude/rules` match `*.md` case-insensitively. A folder without `SKILL.md` is listed as an unsupported item and counted as incomplete.
+- Selecting the root together with one of its folders named like a covered folder (for example `.claude`) can list the same physical file under both projects.
+- In test mode only (`ILLITHID_TEST=1`), the main process exposes its registered IPC handlers so that UI tests can hold replies.
+
 ## Known limitation
 
 The combined evidence is a tested development checkpoint. It does not establish complete release acceptance or compatibility with every version of the three agent tools.
