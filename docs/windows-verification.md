@@ -187,9 +187,35 @@ The gate ran on the final Task 4 changes on `codex/project-census`, before they 
 
 The tests ran as a standard user, without elevation. Junction, file-symlink (Developer Mode was available), ACL-denial and per-folder case-sensitivity tests ran; none was skipped. Node emitted its experimental SQLite warning.
 
+### Census review fixes
+
+An independent review of checkpoint `765f074` reported three P2 findings. A failing regression test reproduced each one before its fix.
+
+| Finding                                                                                                                                                                                                               | Failing test before the fix                                                                                                                      | Fix                                                                                                                                                                                                                                                                  |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P2: an existing folder of a covered path that is not a folder, and `ENOTDIR`, counted as absence. A project with plain files named `.claude`, `.agents` and `.opencode` was reported as empty with nothing incomplete | Two scan tests: the five incomplete items were missing (the project reported `incomplete=0, empty=true`), and an injected `ENOTDIR` left no item | Only `ENOENT` is an absence. A file where a folder belongs yields an unsupported item (`ancestorNotAFolder`) with that path; `ENOTDIR` yields an unreadable item. Truly absent folders and link checks are unchanged (`a302634`)                                     |
+| P2: the project filter kept the candidate id of an earlier root. After a filtered census of root A, a census of root B counted one rule but listed nothing, while the select showed "All projects"                    | Electron test with two synthetic roots: the list was `[]` instead of `q1:AGENTS.md`                                                              | Choosing a root resets the project filter; each completed snapshot keeps it only if that project is in the snapshot, so the applied filter is the one shown (`efd9685`)                                                                                              |
+| P2: rule details continued after Cancel. An inspection held on its first `promises.open` opened the second rule after Cancel and returned both texts with `ok: true`                                                  | IPC test observing the module's real `fs.promises` calls: the second rule was opened after Cancel, and details were returned                     | Rule reads use the run's abort signal, which Cancel, a new discovery and a new start abort. After each asynchronous step the run must still be current and completed; an aborted read is refused as `stale`. A call already under way is not interrupted (`4e771ea`) |
+
+The gate below ran on the final code at `4e771ea`. This document update follows it and changes only this file.
+
+| Check                      | Observed result                                                                                                  |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Census unit tests          | 40/40 passed (37 earlier, 2 for the first finding, 1 covering Cancel, new discovery and new start for the third) |
+| `npm.cmd run test:windows` | Exit 0, including build and TypeScript checks                                                                    |
+| Portable unit runner       | 172 total: 171 passed, 0 failed, 1 upstream skip (Homebrew cask); 8 deferred-feature files excluded              |
+| Windows release fixtures   | 5/5 passed                                                                                                       |
+| Electron UI tests          | 12/12 passed: the 8 global-flow tests and 4 census tests                                                         |
+| `npm.cmd test`             | Exit 0; unit runner as above; the Git, model-stats and session-scan fixtures passed                              |
+| `npm.cmd run lint`         | Exit 0, no errors, the 5 pre-existing warnings in upstream files this change does not touch                      |
+| Prettier and `git diff`    | The 6 files changed by the fixes are formatted; `git diff --check` reports nothing                               |
+
+The tests ran natively as a standard user; no sandbox `EPERM` occurred. Node emitted its experimental SQLite warning.
+
 ### Remaining limits
 
 - Manual acceptance of the census in an installed build has not been performed. No census installer exists.
+- A filesystem call already under way when a census or an inspection is cancelled completes; only the reads queued after it are prevented.
 - The identity and change checks are separate filesystem reads, not one atomic operation. A file is compared by identity, length and modification time before and after its read, and a skill is listed again after it is hashed. A change that keeps length and modification time during the read is not detected.
 - A root on a mapped network drive is refused when its resolved path is a network path. No mapped drive was available to test this.
 - Encoding and line-ending labels describe the part shown in the preview (at most 200 KiB). Equality always covers the whole file.
