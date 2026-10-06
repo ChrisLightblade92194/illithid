@@ -242,6 +242,24 @@ Date: 2026-10-06. Branch `codex/project-import-delivery`, started from the docum
 
 Each task's behavior was first reproduced by failing tests (recorded in the local progress log); two self-review fixes in apply (folders created earlier in the same operation, a staged source change) were each shown failing with the fix disabled.
 
+### Automated results
+
+The gate below ran on the final code at `ddace56`. This document update follows it and changes only this file.
+
+| Check                      | Observed result                                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Project unit tests         | 37/37 passed: content 3, provenance 2, import 6, IPC 5, destinations 3, state 2, plans 5, apply 8, restore 3 |
+| `npm.cmd run test:windows` | Exit 0 in 2 min 21 s, including build and TypeScript checks                                                  |
+| Portable unit runner       | 209 total: 208 passed, 0 failed, 1 upstream skip (Homebrew cask); 8 deferred-feature files excluded          |
+| Windows release fixtures   | 5/5 passed, including the exact Windows allowlist with the census and the eleven project channels            |
+| Electron UI tests          | 17/17 passed: 8 global-flow, 4 census and 5 project import/delivery tests                                    |
+| `npm.cmd test`             | Exit 0; unit runner as above; the Git, model-stats and session-scan fixtures passed                          |
+| `npm.cmd run lint`         | Exit 0, no errors, the 5 pre-existing warnings in upstream files this change does not touch                  |
+| `npm.cmd run typecheck`    | Exit 0                                                                                                       |
+| Prettier and `git diff`    | The 47 files changed since `5abf407` are formatted; `git diff --check` reports nothing                       |
+
+The tests ran natively as a standard user, without elevation. Junction, ACL-denial, hard-link and per-folder case-sensitivity tests ran; none was skipped. Node emitted its experimental SQLite warning.
+
 ### Remaining limits
 
 - The checks before each write are separate filesystem operations, not one atomic step. They narrow, but do not remove, the window in which another program can change a destination between the last check and the rename. Applying several destinations is not atomic; nothing is rolled back automatically.
