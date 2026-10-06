@@ -20,6 +20,7 @@ import {
   type ProjectDecision,
   type ProjectJobView,
   type ProjectOperationRecord,
+  type ProjectPlanView,
   type ProjectSelection
 } from '../engine/project/types'
 import {
@@ -160,6 +161,8 @@ interface DeliverySession {
   plans: Set<string>
   /** Sync previews made under the current discovery (spent when a new discovery supersedes it) */
   discoveryPlans: Set<string>
+  /** Previews whose decision is pending: a discard or a new discovery (for a sync preview) invalidates them */
+  pending: Map<string, { sync: boolean; valid: boolean }>
 }
 
 const staleRequest = (what: string): ProjectError =>
@@ -173,7 +176,8 @@ function deliveryHandlers(
     discovery: null,
     generation: 0,
     plans: new Set(),
-    discoveryPlans: new Set()
+    discoveryPlans: new Set(),
+    pending: new Map()
   }
   const ctx = (): { home: string; signal: AbortSignal } => ({
     home,
@@ -193,12 +197,20 @@ function deliveryHandlers(
     s.plans.add(planId)
     if (sync) s.discoveryPlans.add(planId)
   }
+  /** A pending decision's preview is spent now; its outcome is refused when it settles */
+  const invalidate = (planId: string): void => {
+    const p = s.pending.get(planId)
+    if (!p) return
+    p.valid = false
+    spend(planId)
+  }
   return {
     projectDiscover: (...args) =>
       wrap(async () => {
         const root = text(request(args, ['root']).root, 'root')
         const gen = ++s.generation
         for (const id of [...s.discoveryPlans]) spend(id)
+        for (const [id, p] of s.pending) if (p.sync) invalidate(id)
         s.discovery = null
         const d = await discoverProjects(root)
         if (gen !== s.generation) throw staleRequest('This listing')
@@ -224,17 +236,28 @@ function deliveryHandlers(
         const o = request(args, ['planId', 'decisions'])
         const planId = text(o.planId, 'planId')
         if (!s.plans.has(planId)) throw staleRequest('This preview')
-        const sync = s.discoveryPlans.has(planId)
+        const p = { sync: s.discoveryPlans.has(planId), valid: true }
         s.plans.delete(planId)
         s.discoveryPlans.delete(planId)
-        const view = await decideProjectPlan(ctx(), planId, o.decisions as ProjectDecision[]).catch(
-          (e: unknown) => {
-            // An invalid decision leaves the preview usable; anything else spent it
-            if (e instanceof ProjectError && e.code === 'invalid') issued(planId, sync)
-            throw e
-          }
-        )
-        issued(view.id, sync)
+        s.pending.set(planId, p)
+        let view: ProjectPlanView
+        try {
+          view = await decideProjectPlan(ctx(), planId, o.decisions as ProjectDecision[])
+        } catch (e) {
+          // Discarded or superseded meanwhile: never given back
+          if (!p.valid) throw staleRequest('This preview')
+          // An invalid decision leaves the preview usable; anything else spent it
+          if (e instanceof ProjectError && e.code === 'invalid') issued(planId, p.sync)
+          throw e
+        } finally {
+          s.pending.delete(planId)
+        }
+        // The successor of a preview discarded or superseded meanwhile is obsolete: spent, not issued
+        if (!p.valid) {
+          spend(view.id)
+          throw staleRequest('This preview')
+        }
+        issued(view.id, p.sync)
         return view
       }),
     projectApplyStart: (...args) =>
@@ -283,8 +306,9 @@ function deliveryHandlers(
     projectDiscardPlan: (...args) =>
       wrap(async () => {
         const planId = text(request(args, ['planId']).planId, 'planId')
-        if (!s.plans.has(planId)) throw staleRequest('This preview')
-        spend(planId)
+        if (s.pending.has(planId)) invalidate(planId)
+        else if (!s.plans.has(planId)) throw staleRequest('This preview')
+        else spend(planId)
         return { planId }
       }),
     projectOperations: (...args) =>
