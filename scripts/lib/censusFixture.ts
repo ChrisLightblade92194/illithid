@@ -6,7 +6,8 @@
 import fs from 'node:fs'
 import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
+import { put } from './globalFixture'
 
 export { put, snapshot } from './globalFixture'
 
@@ -15,6 +16,21 @@ export function censusBase(prefix = 'illithid census ä '): string {
   const base = mkdtempSync(resolve(tmpdir(), prefix))
   mkdirSync(base, { recursive: true })
   return base
+}
+
+/**
+ * Synthetic HOME with global tool folders, a global library and delivery state (`<base>/home ä`): the census must
+ * leave all of it untouched. Returns the HOME path.
+ */
+export function syntheticGlobalState(base: string): string {
+  const home = join(base, 'home ä')
+  put(home, '.claude/CLAUDE.md', '# global claude\n')
+  put(home, '.claude/skills/global/SKILL.md', '---\nname: global\n---\nglobal\n')
+  put(home, '.codex/AGENTS.md', '# global codex\n')
+  put(home, '.config/opencode/AGENTS.md', '# global opencode\n')
+  put(home, '.illithid/global/variants/v1/variant.json', '{"version":1}\n')
+  put(home, '.config/illithid/global/deliveries.json', '{"version":1,"deliveries":[]}\n')
+  return home
 }
 
 /** A folder link: a junction on Windows (no privilege needed), a directory symlink elsewhere */
@@ -26,7 +42,28 @@ export interface FsCall {
   /** promises.<name>, <name>Sync or <name> (callback API) */
   fn: string
   path: string
+  /** open flags, when given */
+  flags?: unknown
 }
+
+/** Calls that create, change or remove something */
+const WRITES = [
+  'writeFile',
+  'appendFile',
+  'mkdir',
+  'mkdtemp',
+  'rename',
+  'copyFile',
+  'cp',
+  'rm',
+  'rmdir',
+  'unlink',
+  'symlink',
+  'link',
+  'truncate',
+  'utimes',
+  'chmod'
+]
 
 const NAMES = [
   'access',
@@ -37,7 +74,8 @@ const NAMES = [
   'readFile',
   'open',
   'readlink',
-  'realpath'
+  'realpath',
+  ...WRITES
 ]
 
 /** Calls that enumerate a folder or open/read a file, in any of the three fs APIs */
@@ -45,6 +83,12 @@ const CONTENT = new Set(
   ['readdir', 'opendir', 'readFile', 'open'].flatMap((n) => [`promises.${n}`, `${n}Sync`, n])
 )
 export const isContent = (c: FsCall): boolean => CONTENT.has(c.fn)
+const WRITE_FNS = new Set(WRITES.flatMap((n) => [`promises.${n}`, `${n}Sync`, n]))
+const READ_FLAGS = [undefined, 'r', 0]
+/** A call that writes: a write API, or an open with other than read-only flags */
+export const isWrite = (c: FsCall): boolean =>
+  WRITE_FNS.has(c.fn) ||
+  (/^(promises\.)?open(Sync)?$/.test(c.fn) && !READ_FLAGS.includes(c.flags as never))
 export const fmt = (c: FsCall): string => `${c.fn} ${c.path}`
 
 const norm = (p: string): string =>
@@ -64,6 +108,8 @@ export interface ObserveOptions {
   fail?: (call: FsCall) => NodeJS.ErrnoException | undefined
   /** Awaited before a promise-API call proceeds (holds that read) */
   hold?: (call: FsCall) => Promise<void> | undefined
+  /** Replaces the result of a promise-API call (e.g. a listing in another order) */
+  transform?: (call: FsCall, result: unknown) => unknown
 }
 
 export interface Observed<T> {
@@ -89,7 +135,10 @@ export async function observeFs<T>(
   const savedNative = fs.realpathSync.native as unknown as AnyFn
   const record = (fnName: string, a: unknown[]): FsCall | null => {
     if (typeof a[0] !== 'string') return null
-    const c = { fn: fnName, path: a[0] }
+    const c: FsCall =
+      /open/.test(fnName) && a[1] !== undefined
+        ? { fn: fnName, path: a[0], flags: a[1] }
+        : { fn: fnName, path: a[0] }
     calls.push(c)
     return c
   }
@@ -107,7 +156,8 @@ export async function observeFs<T>(
         const e = opts.fail?.(c)
         if (e) throw e
       }
-      return orig(...a)
+      const r = await orig(...a)
+      return c && opts.transform ? opts.transform(c, r) : r
     })
     patch(fsm, `${n}Sync`, (orig) => (...a: unknown[]) => {
       const c = record(`${n}Sync`, a)
