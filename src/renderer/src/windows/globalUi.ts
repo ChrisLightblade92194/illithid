@@ -57,7 +57,10 @@ export const RESULT_COLOR: Record<string, string> = {
   completed: 'green',
   partial: 'orange',
   interrupted: 'red',
-  running: 'blue'
+  running: 'blue',
+  skipped: 'gray',
+  cancelled: 'orange',
+  uncertain: 'red'
 }
 
 export const short = (s: string | null | undefined, n = 8): string => (s ? s.slice(0, n) : '—')

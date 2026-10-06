@@ -17,7 +17,13 @@ import type { GlobalOperationRecord } from '../engine/globalOperations'
 import type { RestoreDecision } from '../engine/globalRestore'
 import type { GlobalLibraryView, InspectSide, RecipientRef } from '../engine/globalView'
 import type { CensusDetails, CensusDiscovery, CensusRunView } from '../engine/census/types'
-import type { ProjectJobView } from '../engine/project/types'
+import type {
+  ProjectDecision,
+  ProjectJobView,
+  ProjectOperationView,
+  ProjectPlanView,
+  ProjectSelection
+} from '../engine/project/types'
 import type {
   PermissionRules,
   AgentDoc,
@@ -986,6 +992,28 @@ export interface Api {
   projectPoll(req: { jobId: string }): Promise<GlobalResult<ProjectJobView>>
   /** Asks a running job to stop after its current step; the completed part stays and is reported */
   projectCancel(req: { jobId: string }): Promise<GlobalResult<ProjectJobView>>
+  /** Delivery recipients: the root and its immediate folders (metadata only); supersedes the previous discovery */
+  projectDiscover(req: { root: string }): Promise<GlobalResult<CensusDiscovery>>
+  /** Preview of the selected deliveries under the current discovery (stored by the backend; writes nothing) */
+  projectPreview(req: {
+    discoveryId: string
+    selections: ProjectSelection[]
+  }): Promise<GlobalResult<ProjectPlanView>>
+  /** The user's decisions on a preview: a newly bound preview replaces it */
+  projectDecide(req: {
+    planId: string
+    decisions: ProjectDecision[]
+  }): Promise<GlobalResult<ProjectPlanView>>
+  /** Applies a stored preview once (a job); the renderer never sends a list of writes */
+  projectApplyStart(req: { planId: string }): Promise<GlobalResult<{ jobId: string }>>
+  /** Closes a preview without writing anything: it can no longer be applied */
+  projectDiscardPlan(req: { planId: string }): Promise<GlobalResult<{ planId: string }>>
+  /** Project operations, newest first (interrupted ones flagged, never resumed) */
+  projectOperations(req: Record<string, never>): Promise<GlobalResult<ProjectOperationView[]>>
+  /** Restore preview of a project operation */
+  projectRestorePreview(req: { operationId: string }): Promise<GlobalResult<ProjectPlanView>>
+  /** Stops managing a project destination; its files stay as they are */
+  projectForgetDelivery(req: { deliveryId: string }): Promise<GlobalResult<{ deliveryId: string }>>
   // ---- library writes (library required. Auto sync after save when allowRealApply)
   toggle(
     kind: ManifestKind,
@@ -1224,7 +1252,19 @@ export const CENSUS_CHANNELS = [
 ] as const
 
 /** Channels of the Windows project import and delivery (exposed by the Windows release; requests with exact keys) */
-export const PROJECT_CHANNELS = ['projectImportStart', 'projectPoll', 'projectCancel'] as const
+export const PROJECT_CHANNELS = [
+  'projectImportStart',
+  'projectPoll',
+  'projectCancel',
+  'projectDiscover',
+  'projectPreview',
+  'projectDecide',
+  'projectApplyStart',
+  'projectDiscardPlan',
+  'projectOperations',
+  'projectRestorePreview',
+  'projectForgetDelivery'
+] as const
 
 /** Channels of the Windows global flow (exposed by the Windows release with the census and three app channels) */
 export const GLOBAL_CHANNELS = [

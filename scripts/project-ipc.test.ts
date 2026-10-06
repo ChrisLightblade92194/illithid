@@ -12,7 +12,19 @@ import type { CensusDiscovery, CensusItem, CensusRunView } from '../src/engine/c
 import { listGlobalVariants } from '../src/engine/globalVariants'
 import type { ProjectJobView } from '../src/engine/project/types'
 import { PROJECT_CHANNELS, type GlobalResult } from '../src/shared/api'
-import { inside, observeFs, projectWorkspace, put, samePath, SKILL } from './lib/projectFixture'
+import { existsSync } from 'node:fs'
+import { readProjectDeliveries } from '../src/engine/project/state'
+import type { ProjectOperationView, ProjectPlanView } from '../src/engine/project/types'
+import {
+  deliveryWorkspace,
+  inside,
+  observeFs,
+  projectWorkspace,
+  put,
+  samePath,
+  SKILL,
+  snapshot
+} from './lib/projectFixture'
 
 const unhandled: unknown[] = []
 process.on('unhandledRejection', (e) => unhandled.push(e))
@@ -223,6 +235,145 @@ test('project import jobs report per-item outcomes and keep their result after a
   )
   assert.equal(listGlobalVariants(y.home).length, 1)
   assert.deepEqual(ok<ProjectJobView>(await hy.projectPoll({ jobId: jobY })), settled)
+})
+
+test('project delivery channels take exact requests and backend-issued ids only', async () => {
+  const w = await deliveryWorkspace()
+  const s = createCensusService('win32')
+  const h = projectHandlers(w.home, s.access, 'win32')
+  const before = snapshot(w.root)
+  const refused = await observeFs(async () => {
+    const out: (string | undefined)[] = []
+    out.push(code(await h.projectDiscover({ root: w.root, recursive: true })))
+    out.push(code(await h.projectDiscover({ root: 'relative\\folder' })))
+    out.push(code(await h.projectPreview({ discoveryId: 'nope', selections: [] })))
+    out.push(code(await h.projectDecide({ planId: 'pplan-forged-00000000', decisions: [] })))
+    out.push(code(await h.projectApplyStart({ planId: 'pplan-forged-00000000' })))
+    out.push(code(await h.projectDiscardPlan({ planId: 'pplan-forged-00000000' })))
+    out.push(code(await h.projectOperations({ all: true })))
+    out.push(code(await h.projectRestorePreview({ operationId: 'pop-forged-00000000' })))
+    out.push(code(await h.projectForgetDelivery({ deliveryId: 'pd-none' })))
+    return out
+  })
+  assert.deepEqual(refused.value, [
+    'invalid',
+    'unsupportedPath',
+    'stale',
+    'stale',
+    'stale',
+    'stale',
+    'invalid',
+    'notFound',
+    'notFound'
+  ])
+  assert.deepEqual(
+    refused.calls.filter((c) => inside(c.path, w.root) || samePath(c.path, w.root)),
+    []
+  )
+  const d = ok<CensusDiscovery>(await h.projectDiscover({ root: w.root }))
+  const B = d.candidates.find((c) => c.name === 'B')!.id
+  // Selections with a path, an unknown key or an unknown project are refused before any read
+  for (const selections of [
+    [
+      {
+        candidateId: B,
+        variantId: w.rule,
+        tool: 'codex',
+        slot: { type: 'default' },
+        destination: 'C:\\x'
+      }
+    ],
+    [{ candidateId: 'other', variantId: w.rule, tool: 'codex', slot: { type: 'default' } }],
+    [{ candidateId: B, variantId: w.rule, tool: 'codex', slot: { type: 'default', path: 'x' } }]
+  ])
+    assert.equal(code(await h.projectPreview({ discoveryId: d.id, selections })), 'invalid')
+  const plan = ok<ProjectPlanView>(
+    await h.projectPreview({
+      discoveryId: d.id,
+      selections: [{ candidateId: B, variantId: w.rule, tool: 'codex', slot: { type: 'default' } }]
+    })
+  )
+  assert.equal(plan.changes[0].action, 'create')
+  // A new discovery supersedes the previews made under the old one: they can no longer be decided or applied
+  const d2 = ok<CensusDiscovery>(await h.projectDiscover({ root: w.root }))
+  assert.notEqual(d2.id, d.id)
+  assert.equal(code(await h.projectApplyStart({ planId: plan.id })), 'stale')
+  assert.equal(code(await h.projectPreview({ discoveryId: d.id, selections: [] })), 'stale')
+  assert.deepEqual(snapshot(w.root), before, 'nothing written by previews or refusals')
+})
+
+test('apply jobs, operations, restore previews and forget through the project channels', async () => {
+  const w = await deliveryWorkspace()
+  const s = createCensusService('win32')
+  const h = projectHandlers(w.home, s.access, 'win32')
+  const d = ok<CensusDiscovery>(await h.projectDiscover({ root: w.root }))
+  const B = d.candidates.find((c) => c.name === 'B')!.id
+  const E = d.candidates.find((c) => c.name === 'E')!.id
+  const projectBeforeApply = snapshot(w.root)
+  const p0 = ok<ProjectPlanView>(
+    await h.projectPreview({
+      discoveryId: d.id,
+      selections: [
+        { candidateId: B, variantId: w.skill, tool: 'codex', slot: { type: 'default' } },
+        { candidateId: E, variantId: w.rule, tool: 'codex', slot: { type: 'default' } }
+      ]
+    })
+  )
+  const e = p0.changes.find((c) => c.project.name === 'E')!
+  assert.equal(e.action, 'skip')
+  const p = ok<ProjectPlanView>(
+    await h.projectDecide({
+      planId: p0.id,
+      decisions: [{ destinationId: e.destinationId, variantId: w.rule, action: 'replace' }]
+    })
+  )
+  // The replaced preview is spent; only the new one applies, once
+  assert.equal(code(await h.projectApplyStart({ planId: p0.id })), 'stale')
+  const { jobId } = ok<{ jobId: string }>(await h.projectApplyStart({ planId: p.id }))
+  assert.equal(code(await h.projectApplyStart({ planId: p.id })), 'stale')
+  const done = await settle(h, jobId)
+  assert.equal(done.kind, 'apply')
+  assert.equal(done.status, 'completed')
+  const op = done.result as ProjectOperationView
+  assert.equal(op.status, 'completed')
+  assert.ok(existsSync(join(w.root, 'B', '.agents', 'skills', 'caveman', 'SKILL.md')))
+  const ops = ok<ProjectOperationView[]>(await h.projectOperations({}))
+  assert.equal(ops[0].id, op.id)
+  // Restore through its own preview and apply job
+  const r = ok<ProjectPlanView>(await h.projectRestorePreview({ operationId: op.id }))
+  assert.equal(r.kind, 'restore')
+  const rj = ok<{ jobId: string }>(await h.projectApplyStart({ planId: r.id }))
+  const restored = await settle(h, rj.jobId)
+  assert.equal((restored.result as ProjectOperationView).status, 'completed')
+  const contentOf = (snap: Record<string, string>): Record<string, string> =>
+    Object.fromEntries(
+      Object.entries(snap)
+        .filter(([k]) => !k.startsWith('./.'))
+        .map(([k, v]) => [k, v.startsWith('F:') ? v.split(':')[1] : v])
+    )
+  assert.deepEqual(contentOf(snapshot(w.root)), contentOf(projectBeforeApply))
+  // Forget leaves the files and drops only the record
+  const p2 = ok<ProjectPlanView>(
+    await h.projectPreview({
+      discoveryId: d.id,
+      selections: [{ candidateId: B, variantId: w.rule, tool: 'codex', slot: { type: 'default' } }]
+    })
+  )
+  const j2 = ok<{ jobId: string }>(await h.projectApplyStart({ planId: p2.id }))
+  const op2 = (await settle(h, j2.jobId)).result as ProjectOperationView
+  const deliveryId = op2.results[0].deliveryId!
+  assert.deepEqual(ok(await h.projectForgetDelivery({ deliveryId })), { deliveryId })
+  assert.deepEqual(readProjectDeliveries(w.home), [])
+  assert.ok(existsSync(join(w.root, 'B', 'AGENTS.md')))
+  // A discarded preview cannot be applied
+  const p3 = ok<ProjectPlanView>(
+    await h.projectPreview({
+      discoveryId: d.id,
+      selections: [{ candidateId: E, variantId: w.rule2, tool: 'codex', slot: { type: 'default' } }]
+    })
+  )
+  assert.deepEqual(ok(await h.projectDiscardPlan({ planId: p3.id })), { planId: p3.id })
+  assert.equal(code(await h.projectApplyStart({ planId: p3.id })), 'stale')
 })
 
 test('no unhandled rejection in the project IPC tests', () => {

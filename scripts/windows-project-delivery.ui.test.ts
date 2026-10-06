@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import {
@@ -20,7 +20,7 @@ import type { CensusDiscovery, CensusItem } from '../src/engine/census/types'
 import { readStoredVariants } from '../src/engine/globalImport'
 import { CENSUS_CHANNELS, PROJECT_CHANNELS } from '../src/shared/api'
 import { censusBase, linkDir, put, snapshot } from './lib/censusFixture'
-import { contentSnapshot } from './lib/globalFixture'
+import { contentSnapshot, denyWrite } from './lib/globalFixture'
 
 const shots =
   process.env['ILLITHID_SHOTS'] ?? mkdtempSync(join(tmpdir(), 'illithid-project-shots-'))
@@ -127,11 +127,22 @@ const holdNext = (app: ElectronApplication, ch: string): Promise<void> =>
   app.evaluate((_e, c: string) => {
     ;(globalThis as unknown as Probe).__holdNext[c] = true
   }, ch)
-const read = async <K extends keyof Probe>(app: ElectronApplication, key: K): Promise<Probe[K]> =>
-  (await app.evaluate(
-    (_e, k: string) => (globalThis as unknown as Record<string, unknown>)[k],
-    key as string
-  )) as Probe[K]
+/**
+ * A main-process global, read with a narrow retry: Playwright occasionally reports "Resulting promise was garbage
+ * collected" for a synchronous evaluate while a held IPC reply is released (seen once on this machine). Any other
+ * error, and a third such failure, is thrown.
+ */
+async function read<K extends keyof Probe>(app: ElectronApplication, key: K): Promise<Probe[K]> {
+  for (let attempt = 1; ; attempt++)
+    try {
+      return (await app.evaluate(
+        (_e, k: string) => (globalThis as unknown as Record<string, unknown>)[k],
+        key as string
+      )) as Probe[K]
+    } catch (e) {
+      if (attempt >= 3 || !/garbage collected/.test((e as Error).message ?? '')) throw e
+    }
+}
 const calls = async (app: ElectronApplication, ch: string): Promise<Probe['__calls']> =>
   (await read(app, '__calls')).filter((c) => c.ch === ch)
 
@@ -347,6 +358,294 @@ test('project_origin_can_use_global_delivery', { timeout: 240000 }, async () => 
     assert.deepEqual(deliveredSkillBytes, importedSkillBytes)
     assert.deepEqual(snapshot(join(ws.a, '.claude/skills/caveman')), sourceBefore)
   } finally {
+    await app.close()
+  }
+})
+
+/** Imports the given occurrences through the census view (one dialog) */
+async function importVia(
+  app: ElectronApplication,
+  page: Page,
+  root: string,
+  projects: string[],
+  items: [string, string][]
+): Promise<void> {
+  await censusOf(app, page, root, projects)
+  for (const [p, rel] of items) await importCheck(page, p, rel).check()
+  await page.getByTestId('census-import-open').click()
+  const dialog = page.getByTestId('project-import-dialog')
+  await dialog.getByTestId('project-import-run').click()
+  await page.locator('[data-testid="project-import-result"][data-status="completed"]').waitFor()
+  await dialog.getByTestId('project-import-close').click()
+  await dialog.waitFor({ state: 'detached' })
+}
+
+/** Opens the delivery dialog, selects variants by name, discovers root and selects projects */
+async function deliverySetup(
+  app: ElectronApplication,
+  page: Page,
+  root: string,
+  variants: string[],
+  projects: string[]
+): Promise<Locator> {
+  await page.getByTestId('nav-skills').click()
+  await page.getByTestId('open-project-delivery').click()
+  const dialog = page.getByTestId('project-delivery-dialog')
+  await dialog.waitFor()
+  // Nothing preselected: no item, no project
+  assert.equal(await dialog.locator('[data-testid="delivery-variant-check"]:checked').count(), 0)
+  for (const v of variants)
+    await dialog.locator(`[data-testid="delivery-variant-check"][data-name="${v}"]`).check()
+  await setPick(app, root)
+  await dialog.getByTestId('delivery-choose-root').click()
+  await dialog.getByTestId('delivery-candidate').first().waitFor()
+  assert.equal(await dialog.locator('[data-testid^="delivery-project-check-"]:checked').count(), 0)
+  for (const p of projects) await dialog.getByTestId(`delivery-project-check-${p}`).check()
+  return dialog
+}
+
+const lastValue = async <T>(app: ElectronApplication, ch: string): Promise<T> =>
+  ((await calls(app, ch)).at(-1)!.value as { value: T }).value
+
+const comboOf = (dialog: Locator, project: string, variant: string, tool: string): Locator =>
+  dialog.locator(
+    `[data-testid="delivery-combo"][data-project="${project}"][data-variant-name="${variant}"][data-tool="${tool}"]`
+  )
+
+test('project_delivery_mixed_recipients', { timeout: 240000 }, async () => {
+  const ws = workspace()
+  mkdirSync(join(ws.root, 'C'))
+  mkdirSync(join(ws.root, 'D'))
+  const sourceBefore = snapshot(join(ws.a, '.claude/skills/caveman'))
+  const bBefore = snapshot(ws.b)
+  const { app, page } = await launch(ws.home)
+  try {
+    await importVia(app, page, ws.root, ['A'], [['A', '.claude/skills/caveman']])
+    const [variant] = readStoredVariants(ws.home).variants
+    const dialog = await deliverySetup(app, page, ws.root, ['caveman'], ['C', 'D'])
+    // Per-project tools: Codex for C, OpenCode for D (no common tool)
+    await dialog.getByTestId('delivery-override-C').check()
+    await dialog.getByTestId('delivery-tool-C-codex').check()
+    await dialog.getByTestId('delivery-override-D').check()
+    await dialog.getByTestId('delivery-tool-D-opencode').check()
+    assert.deepEqual(
+      await dialog
+        .getByTestId('delivery-combo')
+        .evaluateAll((els) =>
+          els.map(
+            (e) =>
+              e.getAttribute('data-project') +
+              ':' +
+              e.getAttribute('data-tool') +
+              ':' +
+              e.getAttribute('data-target')
+          )
+        ),
+      ['C:codex:.agents/skills/caveman', 'D:opencode:.opencode/skills/caveman']
+    )
+    // Omit the skill for D without changing the library selection
+    await comboOf(dialog, 'D', 'caveman', 'opencode').uncheck()
+    await page.screenshot({ path: join(shots, 'project-04-delivery-choices.png') })
+    await dialog.getByTestId('delivery-preview').click()
+    const preview = page.getByTestId('project-preview')
+    await preview.waitFor()
+    const d = await lastValue<CensusDiscovery>(app, 'projectDiscover')
+    const C = d.candidates.find((c) => c.name === 'C')!.id
+    assert.deepEqual((await calls(app, 'projectPreview')).at(-1)!.arg, {
+      discoveryId: d.id,
+      selections: [
+        { candidateId: C, variantId: variant.id, tool: 'codex', slot: { type: 'default' } }
+      ]
+    })
+    assert.deepEqual(
+      await preview
+        .getByTestId('project-preview-change')
+        .evaluateAll((els) =>
+          els.map((e) => e.getAttribute('data-rel') + ':' + e.getAttribute('data-action'))
+        ),
+      ['.agents/skills/caveman:create']
+    )
+    await page.screenshot({ path: join(shots, 'project-05-delivery-preview.png') })
+    await preview.getByTestId('project-preview-apply').click()
+    await page.locator('[data-testid="project-apply-result"][data-status="completed"]').waitFor()
+    await page.screenshot({ path: join(shots, 'project-06-delivery-result.png') })
+    const projectC = join(ws.root, 'C')
+    const actualTargets = [
+      join(projectC, '.agents', 'skills', 'caveman'),
+      join(ws.root, 'D', '.opencode'),
+      join(ws.root, 'D', '.agents')
+    ].filter((p) => Object.keys(snapshot(p)).length > 0)
+    assert.deepEqual(actualTargets, [join(projectC, '.agents', 'skills', 'caveman')])
+    assert.deepEqual(
+      contentSnapshot(join(projectC, '.agents', 'skills', 'caveman')),
+      contentSnapshot(join(variant.dir, 'content'))
+    )
+    assert.deepEqual(snapshot(ws.b), bBefore, 'an unselected project is untouched')
+    const sourceAfter = snapshot(join(ws.a, '.claude/skills/caveman'))
+    assert.deepEqual(sourceAfter, sourceBefore)
+  } finally {
+    await app.close()
+  }
+})
+
+test('project_preview_late_reply_cannot_enable_apply', { timeout: 240000 }, async () => {
+  const ws = workspace()
+  mkdirSync(join(ws.root, 'C'))
+  const other = join(ws.base, 'other root')
+  mkdirSync(join(other, 'Q'), { recursive: true })
+  const { app, page } = await launch(ws.home)
+  try {
+    await importVia(app, page, ws.root, ['A'], [['A', '.claude/skills/caveman']])
+    const dialog = await deliverySetup(app, page, ws.root, ['caveman'], ['B', 'C'])
+    await dialog.getByTestId('delivery-common-codex').check()
+    // A held preview reply, then a selection change: the late plan is discarded, Apply never appears
+    await holdNext(app, 'projectPreview')
+    await dialog.getByTestId('delivery-preview').click()
+    await until(
+      'a held preview',
+      async () => ((await read(app, '__heldCount'))['projectPreview'] ?? 0) >= 1
+    )
+    await comboOf(dialog, 'C', 'caveman', 'codex').uncheck()
+    await deliverLate(app, page, 'projectPreview')
+    const late = await lastValue<{ id: string }>(app, 'projectPreview')
+    await until('the late plan is discarded', async () =>
+      (await calls(app, 'projectDiscardPlan')).some(
+        (c) => (c.arg as { planId: string }).planId === late.id
+      )
+    )
+    assert.equal(await page.getByTestId('project-preview').count(), 0)
+    assert.equal(await page.getByTestId('project-preview-apply').count(), 0)
+    // A held preview reply, then another root: discarded too
+    await holdNext(app, 'projectPreview')
+    await dialog.getByTestId('delivery-preview').click()
+    await until(
+      'a second held preview',
+      async () => ((await read(app, '__heldCount'))['projectPreview'] ?? 0) >= 2
+    )
+    await setPick(app, other)
+    await dialog.getByTestId('delivery-choose-root').click()
+    await dialog.locator('[data-testid="delivery-candidate"][data-name="Q"]').waitFor()
+    await deliverLate(app, page, 'projectPreview')
+    const late2 = await lastValue<{ id: string }>(app, 'projectPreview')
+    await until('the second late plan is discarded', async () =>
+      (await calls(app, 'projectDiscardPlan')).some(
+        (c) => (c.arg as { planId: string }).planId === late2.id
+      )
+    )
+    assert.equal(await page.getByTestId('project-preview').count(), 0)
+    // Back to the first root: a fresh preview applies; no obsolete id was ever sent to apply
+    await setPick(app, ws.root)
+    await dialog.getByTestId('delivery-choose-root').click()
+    await dialog.getByTestId('delivery-project-check-C').check()
+    await dialog.getByTestId('delivery-common-codex').check()
+    await dialog.getByTestId('delivery-preview').click()
+    await page.getByTestId('project-preview').waitFor()
+    await page.getByTestId('project-preview-apply').click()
+    await page.locator('[data-testid="project-apply-result"][data-status="completed"]').waitFor()
+    const staleApplyRequests = (await calls(app, 'projectApplyStart')).filter((c) =>
+      [late.id, late2.id].includes((c.arg as { planId: string }).planId)
+    )
+    assert.equal(staleApplyRequests.length, 0)
+    assert.equal((await calls(app, 'projectApplyStart')).length, 1)
+  } finally {
+    await app.close()
+  }
+})
+
+test('project_operation_restore_round_trip', { timeout: 300000 }, async () => {
+  const ws = workspace()
+  put(ws.root, 'C/AGENTS.md', '# C rules\n')
+  mkdirSync(join(ws.root, 'D'))
+  const projectBeforeApply = contentSnapshot(join(ws.root, 'C'))
+  const { app, page } = await launch(ws.home)
+  const undo: (() => void)[] = []
+  try {
+    // Two different rules: A's AGENTS.md and B's CLAUDE.md
+    await importVia(
+      app,
+      page,
+      ws.root,
+      ['A', 'B'],
+      [
+        ['A', 'AGENTS.md'],
+        ['B', 'CLAUDE.md']
+      ]
+    )
+    const agents = readStoredVariants(ws.home).variants.find((v) => v.name === 'AGENTS.md')!
+    await page.getByTestId('nav-rules').click()
+    await page.getByTestId('open-project-delivery').click()
+    const dialog = page.getByTestId('project-delivery-dialog')
+    await dialog.locator('[data-testid="delivery-variant-check"][data-name="AGENTS.md"]').check()
+    await dialog.locator('[data-testid="delivery-variant-check"][data-name="CLAUDE.md"]').check()
+    await setPick(app, ws.root)
+    await dialog.getByTestId('delivery-choose-root').click()
+    await dialog.getByTestId('delivery-project-check-C').check()
+    await dialog.getByTestId('delivery-project-check-D').check()
+    await dialog.getByTestId('delivery-common-codex').check()
+    await dialog.getByTestId('delivery-common-opencode').check()
+    // AGENTS.md for Codex in C and D; CLAUDE.md for OpenCode in C only (its default is AGENTS.md too)
+    for (const [p, v, t] of [
+      ['C', 'AGENTS.md', 'opencode'],
+      ['C', 'CLAUDE.md', 'codex'],
+      ['D', 'CLAUDE.md', 'codex'],
+      ['D', 'CLAUDE.md', 'opencode'],
+      ['D', 'AGENTS.md', 'opencode']
+    ])
+      await comboOf(dialog, p, v, t).uncheck()
+    await dialog.getByTestId('delivery-preview').click()
+    const preview = page.getByTestId('project-preview')
+    await preview.waitFor()
+    // C's shared AGENTS.md: two incoming variants, a collision to resolve; D: a plain create
+    const c = preview.locator('[data-testid="project-preview-change"][data-project="C"]')
+    assert.equal(await c.getAttribute('data-collision'), 'true')
+    assert.equal(await preview.getByTestId('project-preview-apply').isDisabled(), true)
+    await c.getByTestId('project-choice').selectOption(agents.id)
+    await page
+      .locator('[data-testid="project-preview-change"][data-project="C"][data-collision="false"]')
+      .waitFor()
+    assert.equal(await c.getAttribute('data-action'), 'skip', 'different content starts as Skip')
+    await c.getByTestId('project-replace').click()
+    await c.getByTestId('project-replace-confirm').click()
+    await page
+      .locator('[data-testid="project-preview-change"][data-project="C"][data-action="replace"]')
+      .waitFor()
+    assert.equal(await preview.getByTestId('project-preview-apply').isDisabled(), false)
+    await page.screenshot({ path: join(shots, 'project-07-collision-replace.png') })
+    // D refuses new files between the preview and the apply: a partial result
+    undo.push(denyWrite(join(ws.root, 'D')))
+    await preview.getByTestId('project-preview-apply').click()
+    await page.locator('[data-testid="project-apply-result"][data-status="partial"]').waitFor()
+    assert.deepEqual(
+      await page
+        .getByTestId('project-apply-outcome')
+        .evaluateAll((els) =>
+          els.map((e) => e.getAttribute('data-project') + ':' + e.getAttribute('data-status'))
+        ),
+      ['C:done', 'D:failed']
+    )
+    await page.screenshot({ path: join(shots, 'project-08-partial-result.png') })
+    undo.pop()!()
+    assert.equal(
+      readFileSync(join(ws.root, 'C', 'AGENTS.md'), 'utf8'),
+      readFileSync(join(agents.dir, agents.content), 'utf8')
+    )
+    await preview.getByTestId('project-preview-close').click()
+    await dialog.waitFor({ state: 'detached' })
+    // Operations: the project operation, its restore preview and apply
+    await page.getByTestId('nav-operations').click()
+    const op = page.locator('[data-testid="project-operation-row"][data-status="partial"]')
+    await op.waitFor()
+    await op.getByTestId('project-restore-preview').click()
+    const restore = page.getByTestId('project-preview')
+    await restore.waitFor()
+    assert.equal(await restore.getAttribute('data-kind'), 'restore')
+    await restore.getByTestId('project-preview-apply').click()
+    await page.locator('[data-testid="project-apply-result"][data-status="completed"]').waitFor()
+    await page.screenshot({ path: join(shots, 'project-09-restore.png') })
+    const restoredProject = contentSnapshot(join(ws.root, 'C'))
+    assert.deepEqual(restoredProject, projectBeforeApply)
+  } finally {
+    for (const u of undo) u()
     await app.close()
   }
 })

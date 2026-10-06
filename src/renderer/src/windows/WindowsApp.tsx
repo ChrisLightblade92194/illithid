@@ -4,10 +4,21 @@
  * memory, sessions, stats, marketplace, git backup, agents) are not offered; there is one apply path only.
  * The project census (spec 2026-10-06) is a separate view: the census reads only; importing selected occurrences into
  * the library is an explicit, confirmed step there. It never applies the global flow.
+ * Project delivery (same spec family) is a separate manual flow: library variants to selected project folders under one
+ * root, with its own preview, apply, operations and restore; the global flow and its records are unchanged.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Alert, Box, Button, Group, NavLink, Stack, Text, Title } from '@mantine/core'
-import { BookOpen, Download, Eye, FolderCog, FolderSearch, History, Sparkles } from 'lucide-react'
+import {
+  BookOpen,
+  Download,
+  Eye,
+  FolderCog,
+  FolderSearch,
+  FolderSymlink,
+  History,
+  Sparkles
+} from 'lucide-react'
 import type { GlobalKind } from '../../../engine/globalImport'
 import type { GlobalSyncPlan } from '../../../engine/globalManualSync'
 import type { GlobalTool } from '../../../engine/globalPaths'
@@ -19,6 +30,8 @@ import { LibraryView } from './LibraryView'
 import { OperationsView } from './OperationsView'
 import { PathsView } from './PathsView'
 import { PreviewDialog } from './PreviewDialog'
+import { ProjectDeliveryDialog } from './ProjectDeliveryDialog'
+import { ProjectOperationsView } from './ProjectOperationsView'
 import { call, errorText } from './globalUi'
 
 type Menu = 'rules' | 'skills' | 'operations' | 'paths' | 'census'
@@ -36,6 +49,7 @@ export default function WindowsApp(): React.JSX.Element {
   const [view, setView] = useState<GlobalLibraryView | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
+  const [delivering, setDelivering] = useState(false)
   const [preview, setPreview] = useState<GlobalSyncPlan | null>(null)
   const [conflict, setConflict] = useState<{
     target: { kind: GlobalKind; name: string; tool: GlobalTool }
@@ -99,7 +113,7 @@ export default function WindowsApp(): React.JSX.Element {
         ))}
         <Text size="xs" c="dimmed" mt="xl">
           Not part of this release: MCP, secrets, hooks, permissions, memory, sessions, statistics,
-          marketplace, delivery to projects and automatic sync.
+          marketplace and automatic sync. Project delivery is manual, one root at a time.
         </Text>
       </Box>
       <Box component="main" p="md" style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
@@ -127,6 +141,16 @@ export default function WindowsApp(): React.JSX.Element {
               >
                 Preview & apply…
               </Button>
+              {view && (menu === 'rules' || menu === 'skills') && (
+                <Button
+                  variant="light"
+                  leftSection={<FolderSymlink size={14} />}
+                  data-testid="open-project-delivery"
+                  onClick={() => setDelivering(true)}
+                >
+                  Deliver to projects…
+                </Button>
+              )}
             </Group>
           )}
         </Group>
@@ -154,7 +178,13 @@ export default function WindowsApp(): React.JSX.Element {
             />
           )}
           {menu === 'operations' && (
-            <OperationsView onPreview={setPreview} onError={setError} tick={tick} />
+            <>
+              <OperationsView onPreview={setPreview} onError={setError} tick={tick} />
+              <Title order={4} mt="md">
+                Project deliveries
+              </Title>
+              <ProjectOperationsView onError={setError} tick={tick} />
+            </>
           )}
           {menu === 'census' && <CensusView onImported={() => void refresh()} />}
         </Stack>
@@ -163,6 +193,15 @@ export default function WindowsApp(): React.JSX.Element {
         <ImportDialog
           onClose={() => {
             setImporting(false)
+            void refresh()
+          }}
+        />
+      )}
+      {delivering && view && (
+        <ProjectDeliveryDialog
+          variants={view.variants}
+          onClose={() => {
+            setDelivering(false)
             void refresh()
           }}
         />
