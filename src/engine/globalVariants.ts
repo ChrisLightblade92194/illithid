@@ -21,6 +21,7 @@ import {
 } from './globalImport'
 import { globalStateDir, type GlobalTool } from './globalPaths'
 import { destinationKey } from './globalDestinations'
+import { readProjectDeliveries } from './project/state'
 import { atomicWrite } from './write'
 
 export type { GlobalTool } from './globalPaths'
@@ -175,7 +176,12 @@ export function mergeGlobalVariants(
   if (list.some((v) => v.name !== list[0].name)) return { ok: false, code: 'nameDiffers' }
   if (revs[0] !== expectedRevision) return { ok: false, code: 'changedSinceCheck' }
   const away = new Set(unique.slice(1))
-  if (readDeliveries(home).some((r) => away.has(r.variantId))) return { ok: false, code: 'inUse' }
+  // Delivered by the global flow or by an active project delivery: the variant stays
+  if (
+    readDeliveries(home).some((r) => away.has(r.variantId)) ||
+    readProjectDeliveries(home).some((r) => away.has(r.variantId))
+  )
+    return { ok: false, code: 'inUse' }
   const [keep, ...rest] = list
   const seen = new Set<string>()
   const origins = [keep, ...rest]

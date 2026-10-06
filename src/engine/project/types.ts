@@ -139,3 +139,73 @@ export interface ProjectJobView {
   result?: ProjectImportResult
   reason?: string
 }
+
+/** Where a selected variant goes in a project: the tool's native default, or a supported alternative rule slot */
+export type ProjectSlot =
+  | { type: 'default' }
+  | { type: 'claudeNested' }
+  | { type: 'claudeLocal' }
+  | { type: 'claudeNamedRule'; name: string }
+  | { type: 'codexOverride' }
+  | { type: 'opencodeClaude' }
+
+/** A supported local instruction or skill slot of the project, from metadata only (its text is never read) */
+export interface LocalSlot {
+  /** Slash-separated, relative to the project */
+  path: string
+  present: boolean
+  linked: boolean
+  /** Documented local precedence or convention overlap (a label, not the effective context of a session) */
+  note?: string
+}
+
+/** A destination inside a project as observed now, without following links */
+export interface ProjectDestinationObservation {
+  destination: string
+  project: CandidateBinding
+  kind: GlobalKind
+  shape: 'absent' | 'file' | 'dir'
+  /** Complete content digest (null when absent) */
+  digest: string | null
+  digestAlgorithm: RevisionAlgorithm
+  /** Folders inside the project down to the destination (identity), then the destination (and its tree) */
+  identities: PathIdentity[]
+  /** Skills: every entry of the existing folder */
+  manifest?: CensusEntry[]
+  /** Existing entry: its identity; absent: the nearest existing folder's identity plus the exact missing names */
+  physicalKey: string
+  /** Nearest existing folder at or above the destination's parent */
+  existingAncestor: PathIdentity
+  /** Absent destinations: the names missing below existingAncestor, the destination's own name last */
+  remaining: string[]
+  localSlots: LocalSlot[]
+}
+
+/** An ownership record of the other scope that a destination would overlap */
+export interface ScopeOverlap {
+  scope: 'global' | 'project'
+  destination: string
+  recordId: string
+  reason: string
+}
+
+/** What Illithid delivered to a project destination (state file, never inside the project) */
+export interface ProjectDeliveryRecord {
+  version: 1
+  id: string
+  scope: 'project'
+  /** The project folder and its identity chain when delivered */
+  project: CandidateBinding
+  /** Identity of the delivered entry right after the delivery */
+  target: { physicalKey: string }
+  destination: string
+  kind: GlobalKind
+  /** Tools whose convention the destination was chosen for (not proof of loading) */
+  recipients: GlobalTool[]
+  variantId: string
+  variantRevision: string
+  deliveredDigest: string
+  digestAlgorithm: RevisionAlgorithm
+  operationId: string
+  at: string
+}
