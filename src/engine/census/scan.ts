@@ -198,8 +198,9 @@ export function createReader(signal: AbortSignal, limits: CensusLimits): CensusR
   }
 
   /**
-   * lstat of a covered path, walking its folders inside the project without following any link. null = absent.
-   * A link on the way makes the position incomplete (linkedAncestor), as does the path itself being a link.
+   * lstat of a covered path, walking its folders inside the project without following any link. null = absent
+   * (ENOENT only). A link on the way makes the position incomplete (linkedAncestor), as does the path itself being a
+   * link; so does a folder of the path that exists but is not a folder (ancestorNotAFolder), or any other error.
    */
   async function locate(project: string, rel: string): Promise<BigIntStats | null> {
     const parts = rel.split('/')
@@ -210,7 +211,8 @@ export function createReader(signal: AbortSignal, limits: CensusLimits): CensusR
       try {
         st = await fs.lstat(abs(project, r))
       } catch (e) {
-        if (fsError(e) && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return null
+        // Only a missing entry is an ordinary absence; ENOTDIR and every other error leave the position unread
+        if (fsError(e) && e.code === 'ENOENT') return null
         const x = incomplete(e)
         if (!last) x.problemPath = r
         throw x
@@ -223,7 +225,8 @@ export function createReader(signal: AbortSignal, limits: CensusLimits): CensusR
           await fs.readlink(abs(project, r))
         )
       if (last) return st
-      if (!st.isDirectory()) return null
+      // A file (or other entry) where a folder of the path belongs: present but not valid, so incomplete
+      if (!st.isDirectory()) throw new Incomplete('unsupported', 'ancestorNotAFolder', r)
     }
     return null
   }

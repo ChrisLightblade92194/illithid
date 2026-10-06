@@ -42,6 +42,7 @@ const REASON: Record<string, string> = {
   notASkill: 'Folder without SKILL.md: not a skill.',
   notAFile: 'Not a file.',
   notAFolder: 'Not a folder.',
+  ancestorNotAFolder: 'A folder on the way is a file, not a folder: not read.',
   changedDuringRead: 'Changed while it was read: run the census again.',
   fileBytes: 'A file is larger than the 64 MiB read limit: not compared.',
   skillBytes: 'The skill holds more than the 256 MiB read limit: not compared.',

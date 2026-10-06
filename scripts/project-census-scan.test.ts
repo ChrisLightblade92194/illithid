@@ -328,6 +328,53 @@ test('a project replaced after discovery is refused before any read, even with i
   assert.deepEqual(r.calls.filter(isContent).map(fmt), [])
 })
 
+test('a configuration folder that is a file is incomplete, not absent; truly absent folders stay absent', async () => {
+  const root = join(censusBase(), 'not folders ö')
+  const bad = join(root, 'files instead')
+  put(bad, 'AGENTS.md', '# readable\n')
+  put(bad, '.claude', 'a file where the .claude folder belongs\n')
+  put(bad, '.agents', 'a file\n')
+  put(bad, '.opencode', 'a file\n')
+  put(root, 'absent/AGENTS.md', '# readable\n')
+  mkdirSync(join(root, 'nothing'))
+  const { s } = await observedScan(root, ['files instead', 'absent', 'nothing'])
+  assert.deepEqual(linkRows(s, 'files instead'), [
+    ['rule', 'AGENTS.md', 'complete', null, null, null],
+    ['rule', '.claude/CLAUDE.md', 'unsupported', 'ancestorNotAFolder', '.claude', null],
+    ['rule', '.claude/rules', 'unsupported', 'ancestorNotAFolder', '.claude', null],
+    ['skill', '.claude/skills', 'unsupported', 'ancestorNotAFolder', '.claude', null],
+    ['skill', '.agents/skills', 'unsupported', 'ancestorNotAFolder', '.agents', null],
+    ['skill', '.opencode/skills', 'unsupported', 'ancestorNotAFolder', '.opencode', null]
+  ])
+  assert.deepEqual(linkRows(s, 'absent'), [['rule', 'AGENTS.md', 'complete', null, null, null]])
+  assert.deepEqual(
+    s.projects.map((p) => [p.name, p.status, p.rules, p.skills, p.incomplete, p.empty]),
+    [
+      ['absent', 'scanned', 1, 0, 0, false],
+      ['files instead', 'scanned', 1, 0, 5, false],
+      ['nothing', 'scanned', 0, 0, 0, true]
+    ]
+  )
+})
+
+test('ENOTDIR on a covered path is an incomplete item, not an absence', async () => {
+  const root = join(censusBase(), 'enotdir ö')
+  const p = join(root, 'p')
+  put(p, 'AGENTS.md', '# readable\n')
+  const claude = put(p, 'CLAUDE.md', '# would be read\n')
+  const fail = (c: FsCall): NodeJS.ErrnoException | undefined =>
+    c.fn === 'promises.lstat' && samePath(c.path, claude) ? errno('ENOTDIR') : undefined
+  const { s } = await observedScan(root, ['p'], { fail })
+  assert.deepEqual(linkRows(s, 'p'), [
+    ['rule', 'AGENTS.md', 'complete', null, null, null],
+    ['rule', 'CLAUDE.md', 'unreadable', 'ENOTDIR', null, null]
+  ])
+  assert.deepEqual(
+    s.projects.map((x) => [x.incomplete, x.empty]),
+    [[1, false]]
+  )
+})
+
 test('unreadable items are incomplete, not absent; one failure keeps every other result', async () => {
   const base = censusBase()
   const root = join(base, 'errors ö')
