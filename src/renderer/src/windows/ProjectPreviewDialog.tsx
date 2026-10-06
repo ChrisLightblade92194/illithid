@@ -409,6 +409,8 @@ export function ProjectPreviewPanel({
   const [error, setError] = useState<string | null>(null)
   const [spent, setSpent] = useState(false)
   const [job, setJob] = useState<ProjectJobView | null>(null)
+  /** Apply requested, job id not received yet: leaving now would lose the job, its progress and its Cancel */
+  const [starting, setStarting] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   /** Bumped when the panel closes: later replies are ignored */
   const gen = useRef(0)
@@ -463,6 +465,7 @@ export function ProjectPreviewPanel({
   const apply = async (): Promise<void> => {
     const g = gen.current
     setBusy(true)
+    setStarting(true)
     setSpent(true)
     setError(null)
     try {
@@ -478,12 +481,15 @@ export function ProjectPreviewPanel({
     } catch (e) {
       if (g === gen.current) setError(errorText(e))
     } finally {
-      if (g === gen.current) setBusy(false)
+      if (g === gen.current) {
+        setBusy(false)
+        setStarting(false)
+      }
     }
   }
 
   const leave = (then: () => void): void => {
-    if (job?.status === 'running') return
+    if (starting || job?.status === 'running') return
     gen.current++
     // A preview that was never applied is discarded: it cannot be replayed later
     if (!spent) void window.api.projectDiscardPlan({ planId: current.current })
@@ -547,6 +553,11 @@ export function ProjectPreviewPanel({
           </Stack>
         </ScrollArea.Autosize>
       )}
+      {starting && (
+        <Text size="sm" c="dimmed" data-testid="project-apply-progress">
+          Starting the apply…
+        </Text>
+      )}
       {running && (
         <Text size="sm" c="dimmed" data-testid="project-apply-progress">
           {cancelling
@@ -583,6 +594,7 @@ export function ProjectPreviewPanel({
           <Button
             variant="default"
             data-testid="project-preview-close"
+            disabled={starting}
             onClick={() => leave(() => onClose(!!job))}
           >
             Close

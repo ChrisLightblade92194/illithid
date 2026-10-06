@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import {
@@ -84,6 +84,8 @@ interface Probe {
   __release: Record<string, (() => void) | undefined>
   __heldCount: Record<string, number>
   __doneCount: Record<string, number>
+  /** Set by holdFsIn once a held filesystem call is waiting */
+  __fsHeld?: boolean
 }
 
 // The functions passed to app.evaluate run in the main process: no named inner functions
@@ -646,6 +648,142 @@ test('project_operation_restore_round_trip', { timeout: 300000 }, async () => {
     assert.deepEqual(restoredProject, projectBeforeApply)
   } finally {
     for (const u of undo) u()
+    await app.close()
+  }
+})
+
+/**
+ * Holds the main process's first promise-API filesystem call inside dir (test mode only) until __fsRelease(): an
+ * apply job reading its library variant there stays running. No named inner functions (the function runs in main).
+ */
+async function holdFsIn(app: ElectronApplication, dir: string): Promise<void> {
+  await app.evaluate((_e, d: string) => {
+    const g = globalThis as unknown as Record<string, unknown>
+    const fsp = (
+      process as unknown as {
+        getBuiltinModule(m: string): {
+          promises: Record<string, (...a: unknown[]) => Promise<unknown>>
+        }
+      }
+    ).getBuiltinModule('node:fs').promises
+    const prefix = d.toLowerCase()
+    const saved: [string, (...a: unknown[]) => Promise<unknown>][] = []
+    let open: (() => void) | undefined
+    const gate = new Promise<void>((r) => {
+      open = r
+    })
+    g.__fsHeld = false
+    g.__fsRelease = () => {
+      for (const [k, f] of saved) fsp[k] = f
+      open?.()
+    }
+    for (const k of ['lstat', 'open', 'readdir', 'stat']) {
+      const orig = fsp[k]
+      saved.push([k, orig])
+      fsp[k] = async (...a: unknown[]) => {
+        if (!g.__fsHeld && typeof a[0] === 'string' && a[0].toLowerCase().startsWith(prefix)) {
+          g.__fsHeld = true
+          await gate
+        }
+        return orig.apply(fsp, a)
+      }
+    }
+  }, dir)
+}
+const releaseFs = (app: ElectronApplication): Promise<void> =>
+  app.evaluate(() => {
+    const g = globalThis as unknown as { __fsRelease?: () => void }
+    g.__fsRelease?.()
+  })
+
+test('project_apply_start_reply_keeps_job_controls', { timeout: 240000 }, async () => {
+  const ws = workspace()
+  mkdirSync(join(ws.root, 'C'))
+  const { app, page } = await launch(ws.home)
+  try {
+    await importVia(app, page, ws.root, ['A'], [['A', '.claude/skills/caveman']])
+    const [variant] = readStoredVariants(ws.home).variants
+    let dialog = await deliverySetup(app, page, ws.root, ['caveman'], ['C'])
+    await dialog.getByTestId('delivery-common-codex').check()
+    await dialog.getByTestId('delivery-preview').click()
+    let preview = page.getByTestId('project-preview')
+    await preview.waitFor()
+    // The backend starts the job (held on its first library read); its start reply is held on the way back
+    await holdFsIn(app, variant.dir)
+    await holdNext(app, 'projectApplyStart')
+    await preview.getByTestId('project-preview-apply').click()
+    await until(
+      'a held apply start',
+      async () => ((await read(app, '__heldCount'))['projectApplyStart'] ?? 0) >= 1
+    )
+    const started = (await calls(app, 'projectApplyStart')).at(-1)!.value as {
+      ok: boolean
+      value: { jobId: string }
+    }
+    assert.equal(started.ok, true, 'the backend started the job')
+    const jobId = started.value.jobId
+    // While the job id is on its way the dialog cannot be left: the job and its result would be lost
+    const close = preview.getByTestId('project-preview-close')
+    assert.equal(await close.isDisabled(), true, 'Close is disabled while the apply starts')
+    assert.equal(
+      await preview.getByRole('button', { name: 'Back to choices' }).isDisabled(),
+      true,
+      'Back is disabled while the apply starts'
+    )
+    await close.click({ force: true, timeout: 2000 }).catch(() => {})
+    assert.equal(await preview.count(), 1, 'the preview stays open')
+    await page.screenshot({ path: join(shots, 'project-10-apply-starting.png') })
+    // The id arrives: the renderer polls that job and offers Cancel while it runs
+    await deliverLate(app, page, 'projectApplyStart')
+    await until('a poll of the started job', async () =>
+      (await calls(app, 'projectPoll')).some((c) => (c.arg as { jobId: string }).jobId === jobId)
+    )
+    assert.equal(await read(app, '__fsHeld'), true, 'the job is still running')
+    await preview.getByTestId('project-apply-cancel').click()
+    await until('the cancel of the started job', async () =>
+      (await calls(app, 'projectCancel')).some((c) => (c.arg as { jobId: string }).jobId === jobId)
+    )
+    await releaseFs(app)
+    // The real outcome of that job is shown, then the dialog can be closed
+    const result = preview.getByTestId('project-apply-result')
+    await result.waitFor()
+    const finalView = [...(await calls(app, 'projectPoll')), ...(await calls(app, 'projectCancel'))]
+      .map(
+        (x) =>
+          (x.value as { value?: { id: string; status: string; result?: { status: string } } }).value
+      )
+      .filter((v) => v?.id === jobId && v.status !== 'running')
+    assert.ok(finalView.length >= 1)
+    assert.equal(finalView[0]!.status, 'cancelled')
+    assert.equal(await result.getAttribute('data-status'), finalView[0]!.result!.status)
+    assert.equal(existsSync(join(ws.root, 'C', '.agents')), false, 'cancelled before any write')
+    await page.screenshot({ path: join(shots, 'project-11-apply-cancelled.png') })
+    await close.click()
+    await dialog.waitFor({ state: 'detached' })
+
+    // A refused start (the preview was superseded in the backend) leaves the dialog closable
+    dialog = await deliverySetup(app, page, ws.root, ['caveman'], ['C'])
+    await dialog.getByTestId('delivery-common-codex').check()
+    await dialog.getByTestId('delivery-preview').click()
+    preview = page.getByTestId('project-preview')
+    await preview.waitFor()
+    await page.evaluate(
+      (root) =>
+        (
+          window as unknown as { api: { projectDiscover: (r: unknown) => Promise<unknown> } }
+        ).api.projectDiscover({ root }),
+      ws.root
+    )
+    await preview.getByTestId('project-preview-apply').click()
+    await preview.getByTestId('project-preview-error').waitFor()
+    const refusedStart = (await calls(app, 'projectApplyStart')).at(-1)!.value as { ok: boolean }
+    assert.equal(refusedStart.ok, false)
+    assert.equal(await preview.getByTestId('project-preview-close').isDisabled(), false)
+    await preview.getByTestId('project-preview-close').click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.equal(existsSync(join(ws.root, 'C', '.agents')), false)
+  } finally {
+    await releaseFs(app).catch(() => {})
     await app.close()
   }
 })
