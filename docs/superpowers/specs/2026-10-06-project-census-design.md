@@ -1,6 +1,6 @@
 # Project rules and skills census — Windows v1
 
-Date: 2026-10-06. Status: proposed written specification, pending user review.
+Date: 2026-10-06. Status: approved by the user; implementation plan is the next review stage.
 
 Base: published Windows preview checkpoint `80e8c24a14bfb5931aaf96d42631a77beb41ecd5`. Design branch: `codex/project-census-design`.
 
@@ -114,4 +114,6 @@ Use synthetic project trees. Do not scan the user's real project collection or i
 
 ## Next stage
 
-The user reviews this written specification. After approval, prepare an implementation plan and a scoped implementer handoff. Product code, installation and publication are outside this design-only checkpoint.
+The user approved this written specification and the separation of census from project delivery. Prepare an implementation plan and a scoped implementer handoff. Product code, installation and publication are outside this design-only checkpoint.
+
+The agreed follow-on increment is manual delivery between scopes: import a project's rule or skill into the shared library, then choose global destinations for selected tools, one project, or multiple selected projects. It retains explicit preview, human decisions about differing content, backup and restore. That increment requires its own design and is not part of census v1.
