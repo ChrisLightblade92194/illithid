@@ -209,3 +209,69 @@ export interface ProjectDeliveryRecord {
   operationId: string
   at: string
 }
+
+/** One requested delivery: a library variant to a project for a tool's slot (ids issued by the backend) */
+export interface ProjectSelection {
+  candidateId: string
+  variantId: string
+  tool: GlobalTool
+  slot: ProjectSlot
+}
+
+export interface ProjectFileChange {
+  path: string
+  change: 'added' | 'removed' | 'changed' | 'same'
+}
+
+export interface ProjectPreview {
+  before: string | null
+  after: string | null
+  /** Skills: every entry compared (files and folders, hidden ones included) */
+  files?: ProjectFileChange[]
+  truncated?: boolean
+}
+
+/** One physical destination of a preview, with every incoming variant and the human decision */
+export interface ProjectPlanChange {
+  destinationId: string
+  destination: string
+  /** Slash-separated, relative to the project */
+  relativePath: string
+  project: { id: string; path: string; name: string }
+  kind: GlobalKind
+  recipients: GlobalTool[]
+  incoming: { variantId: string; variantRevision: string; kind: GlobalKind; name: string }[]
+  selectedVariantId: string | null
+  /** What is there now compared with the selected variant (or with every incoming one when none is chosen) */
+  state: 'absent' | 'identical' | 'different'
+  beforeDigest: string | null
+  afterDigest: string | null
+  owner: ProjectDeliveryRecord | null
+  preview: ProjectPreview
+  action: 'create' | 'unchanged' | 'skip' | 'replace' | 'restore'
+  localSlots: LocalSlot[]
+  /** Restore plans: what this destination goes back to */
+  restore?: { absentBefore: boolean; previousOwner: ProjectDeliveryRecord | null }
+}
+
+export interface ProjectPlanView {
+  id: string
+  kind: 'sync' | 'restore'
+  createdAt: string
+  root: string
+  changes: ProjectPlanChange[]
+  /** Physical destinations with several incoming variants and no explicit choice yet */
+  collisions: { destinationId: string; variantIds: string[] }[]
+  excluded: { selection: ProjectSelection | null; destination?: string; reason: string }[]
+  /** No unresolved collision and at least one write */
+  applicable: boolean
+  restoreOf?: string
+}
+
+export type ProjectDecision =
+  | {
+      destinationId: string
+      variantId: string | null
+      action: 'create' | 'unchanged' | 'skip' | 'replace'
+    }
+  | { destinationId: string; action: 'restore' | 'skip' }

@@ -57,6 +57,7 @@ import {
   type GlobalOperationRecord
 } from './globalOperations'
 import { deliverDir } from './deliver'
+import { findScopeOverlap } from './project/ownership'
 import { globalTreeDigest } from './globalDigest'
 import { appTmpName, atomicWrite } from './write'
 
@@ -450,6 +451,11 @@ export function computeGlobalPlan(
     }
     if (linkedAncestor(root, choice.destination)) {
       excluded.push({ choice, reason: 'linkedAncestor' })
+      continue
+    }
+    // A file or folder a project delivery owns (whole file, or a folder holding it) is never a global destination
+    if (findScopeOverlap(home, choice.destination, 'global')) {
+      excluded.push({ choice, reason: 'projectOwnership' })
       continue
     }
     if (
@@ -949,6 +955,9 @@ export function executePlan(
       const root = stored.roots[change.tool]
       if (!root || linkedAncestor(root, change.destination))
         return done('refused', 'linkedAncestor')
+      // A project delivery may own it since the preview (checked under the shared apply lock)
+      if (findScopeOverlap(home, change.destination, 'global'))
+        return done('refused', 'projectOwnership')
       const state = readDestination(change.destination, change.kind)
       if (state.digest !== change.destinationDigest) return done('refused', 'changedSinceCheck')
       res.phase = 'checked'

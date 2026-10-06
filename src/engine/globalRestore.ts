@@ -36,6 +36,7 @@ import {
 } from './globalVariants'
 import { dirContentHash } from './skills'
 import { globalTreeDigest } from './globalDigest'
+import { findScopeOverlap } from './project/ownership'
 
 export interface RestoreDecision {
   destination: string
@@ -101,6 +102,10 @@ export function planGlobalRestore(
     }
     if (linkedAncestor(root, r.destination)) {
       excluded.push({ choice, reason: 'linkedAncestor' })
+      continue
+    }
+    if (findScopeOverlap(home, r.destination, 'global')) {
+      excluded.push({ choice, reason: 'projectOwnership' })
       continue
     }
     // Legacy backups retain their original verification; new restore plans bind every byte they will copy.

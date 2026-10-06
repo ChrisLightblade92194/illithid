@@ -28,8 +28,15 @@ import {
   type Listed,
   type TreeSink
 } from '../census/scan'
-import { CensusError, type CandidateBinding, type PathIdentity } from '../census/types'
-import type { GlobalKind } from '../globalImport'
+import {
+  CensusError,
+  type CandidateBinding,
+  type CensusEntry,
+  type PathIdentity
+} from '../census/types'
+import type { GlobalKind, StoredVariant } from '../globalImport'
+import { globalLibraryDir } from '../globalPaths'
+import { validVariantName } from '../globalVariants'
 import { ProjectError, type ProjectContentObservation } from './types'
 
 const MiB = 1024 * 1024
@@ -92,7 +99,7 @@ async function locateItem(reader: CensusReader, project: string, rel: string): P
 }
 
 /** Observation of the item at `parent/name` (no project binding): the shared part of source and copy reads */
-async function observeAt(
+export async function observeAt(
   reader: CensusReader,
   limits: CensusLimits,
   parent: string,
@@ -354,5 +361,96 @@ export async function copyProjectContent(
   } catch (e) {
     if (created) await fsp.rm(destination, { recursive: true, force: true }).catch(() => {})
     throw asProjectError(e)
+  }
+}
+
+/** A library variant's content as observed now, from validated storage inside the library */
+export interface VariantObservation {
+  id: string
+  kind: GlobalKind
+  name: string
+  revision: string
+  revisionAlgorithm: 'sha256-v1' | 'fullTree-v1'
+  contentPath: string
+  manifest?: CensusEntry[]
+  identities: PathIdentity[]
+  bytes: number
+}
+
+const VARIANT_ID = /^(rule|skill)-[0-9a-f]{16}$/
+
+/**
+ * Complete observation of a library variant. Its record must name a folder of the library and content inside that
+ * folder (`content` for a skill, `content/<file>` for a rule); a path escape, a link or junction anywhere from the
+ * variant folder down, or an incomplete read refuses it (reason variantCorrupt / variantLinked / variantUnreadable).
+ */
+export async function observeLibraryVariant(
+  home: string,
+  v: StoredVariant & { dir: string },
+  signal: AbortSignal
+): Promise<VariantObservation> {
+  signal.throwIfAborted()
+  const lib = globalLibraryDir(home)
+  const corrupt = (why: string): ProjectError =>
+    new ProjectError('refused', `Library variant ${v.id}: ${why}.`, 'variantCorrupt')
+  if (typeof v.id !== 'string' || !VARIANT_ID.test(v.id) || !v.id.startsWith(`${v.kind}-`))
+    throw corrupt('unexpected id')
+  if (v.dir !== join(lib, v.id)) throw corrupt('unexpected folder')
+  const fileName = v.kind === 'rule' ? /^content\/([^\\/:*?"<>|]+)$/.exec(v.content)?.[1] : null
+  if (
+    v.kind === 'skill'
+      ? v.content !== 'content'
+      : !fileName || fileName === '.' || fileName === '..'
+  )
+    throw corrupt('content outside the variant folder')
+  if (typeof v.name !== 'string' || !validVariantName(v.kind, v.name)) throw corrupt('invalid name')
+  const reader = createReader(signal, CENSUS_LIMITS)
+  const contentPath = join(v.dir, ...v.content.split('/'))
+  try {
+    const chain: PathIdentity[] = []
+    let st: BigIntStats | null = null
+    for (const p of v.kind === 'rule'
+      ? [v.dir, join(v.dir, 'content'), contentPath]
+      : [v.dir, contentPath]) {
+      st = await reader.fs.lstat(p)
+      if (st.isSymbolicLink())
+        throw new ProjectError(
+          'refused',
+          `Library variant ${v.id}: linked content.`,
+          'variantLinked'
+        )
+      if (p !== contentPath) {
+        if (!st.isDirectory()) throw corrupt('not a folder')
+        chain.push({ path: p, fingerprint: identityOf(st) })
+      }
+    }
+    const seen = await observeAt(
+      reader,
+      CENSUS_LIMITS,
+      dirname(contentPath),
+      basename(contentPath),
+      v.kind,
+      st!
+    )
+    return {
+      id: v.id,
+      kind: v.kind,
+      name: v.name,
+      revision: seen.revision,
+      revisionAlgorithm: seen.revisionAlgorithm,
+      contentPath,
+      ...(seen.manifest ? { manifest: seen.manifest } : {}),
+      identities: [...chain, ...seen.identities],
+      bytes: seen.bytes
+    }
+  } catch (e) {
+    const x = asProjectError(e)
+    if (x instanceof ProjectError && x.code === 'incomplete')
+      throw new ProjectError(
+        'refused',
+        `Library variant ${v.id}: ${x.message}`,
+        'variantUnreadable'
+      )
+    throw x
   }
 }
