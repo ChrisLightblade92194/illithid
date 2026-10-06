@@ -140,7 +140,8 @@ function sideOf(r: Run, item: CensusItem): CensusSideRef {
 /** The rule as it is now, refused unless its whole content still has the census digest; bounded preview */
 async function previewRule(r: Run, item: CensusItem): Promise<RulePreview> {
   const side = sideOf(r, item)
-  const reader = createReader(new AbortController().signal, CENSUS_LIMITS)
+  // Bound to the run: Cancel, a new discovery or a new start aborts it, so no queued read starts afterwards
+  const reader = createReader(r.controller.signal, CENSUS_LIMITS)
   const parts: Buffer[] = []
   let kept = 0
   let read: { digest: string; bytes: number }
@@ -154,7 +155,7 @@ async function previewRule(r: Run, item: CensusItem): Promise<RulePreview> {
       kept += take.length
     })
   } catch {
-    throw changedSince()
+    throw r.controller.signal.aborted ? stale() : changedSince()
   }
   if (read.digest !== item.digest) throw changedSince()
   const head = Buffer.concat(parts)
@@ -298,10 +299,19 @@ export function censusHandlers(
             right: sideOf(r, right),
             ...diffManifests(left.manifest ?? [], right.manifest ?? [])
           }
-        for (const i of [left, right]) await recheckBinding(r.discovery.bindings.get(i.projectId)!)
+        // After every asynchronous step the run must still be the current, completed (not cancelled) one
+        const stillCurrent = (): void => {
+          if (run !== r || r.view.status !== 'completed' || r.controller.signal.aborted)
+            throw stale()
+        }
+        for (const i of [left, right]) {
+          await recheckBinding(r.discovery.bindings.get(i.projectId)!)
+          stillCurrent()
+        }
         const l = await previewRule(r, left)
+        stillCurrent()
         const rr = await previewRule(r, right)
-        if (run !== r) throw stale()
+        stillCurrent()
         return { kind: 'rule', left: l, right: rr, identical: left.digest === right.digest }
       })
   }

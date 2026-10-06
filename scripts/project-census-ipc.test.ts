@@ -23,6 +23,7 @@ import {
   linkDir,
   observeFs,
   put,
+  samePath,
   type FsCall
 } from './lib/censusFixture'
 
@@ -489,4 +490,54 @@ test('skill details compare the cached manifests without touching the filesystem
     r.calls.map((c: FsCall) => fmt(c)),
     []
   )
+})
+
+test('rule details stop at Cancel, a new discovery or a new start: no further read, no details returned', async () => {
+  for (const by of ['cancel', 'discover', 'start'] as const) {
+    const ws = workspace()
+    let scans = 0
+    // The first census is real; a superseding one never settles and reads nothing
+    const h = censusHandlers('win32', (d, ids, o) =>
+      scans++ === 0 ? scanProjects(d, ids, o) : new Promise(() => {})
+    )
+    const { d, runId, view } = await completedRun(h, ws)
+    const left = join(ws.p1, 'CLAUDE.md')
+    const right = join(ws.p2, 'CLAUDE.md')
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const atOpen = new Promise<void>((r) => (reached = r))
+    let held = false
+    const hold = (c: FsCall): Promise<void> | undefined => {
+      if (held || c.fn !== 'promises.open' || !(samePath(c.path, left) || samePath(c.path, right)))
+        return undefined
+      held = true
+      reached()
+      return gate
+    }
+    const pending = observeFs(
+      () =>
+        h.censusInspect({
+          runId,
+          leftId: itemOf(view, 'p1', 'CLAUDE.md').id,
+          rightId: itemOf(view, 'p2', 'CLAUDE.md').id
+        }),
+      { hold }
+    )
+    await atOpen
+    if (by === 'cancel')
+      assert.deepEqual(ok(await h.censusCancel({ runId })), { runId, status: 'cancelled' })
+    if (by === 'discover') await discover(h, ws.root)
+    if (by === 'start')
+      ok(await h.censusStart({ discoveryId: d.id, candidateIds: [cid(d, 'p1'), cid(d, 'p2')] }))
+    // The open already under way completes; nothing queued after it starts, and no details come back
+    release()
+    const r = await pending
+    assert.deepEqual(
+      r.calls.filter((c) => c.fn === 'promises.open').map((c) => c.path),
+      [left],
+      by
+    )
+    assert.equal(code(r.value), 'stale', by)
+  }
 })
