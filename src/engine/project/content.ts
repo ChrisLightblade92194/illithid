@@ -42,7 +42,7 @@ import { ProjectError, type ProjectContentObservation } from './types'
 const MiB = 1024 * 1024
 
 /** Identity of an entry of the observed item: any change of inode, size or modification time is a change */
-const entryPrint = (kind: 'dir' | 'file', st: BigIntStats): string =>
+export const entryPrint = (kind: 'dir' | 'file', st: BigIntStats): string =>
   `${kind}:${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}`
 
 /** A project-relative, slash-separated path without empty, `.` or `..` segments */
@@ -233,26 +233,33 @@ const changed = (reason?: string): ProjectError =>
   new ProjectError('changedSinceCheck', 'The content changed since it was read.', reason)
 
 /**
- * Copies one file, refused unless it is still the listed plain file and its bytes have the expected digest. The
- * destination is created exclusively and flushed before it is closed.
+ * Copies one file, refused unless it is still the listed plain file (its listed print, when given: inode, size and
+ * modification time) and its bytes have the expected digest. The destination is created exclusively and flushed
+ * before it is closed; a refused copy leaves its partial destination for the caller to remove.
  */
-async function copyFileVerified(
+export async function copyFileVerified(
   src: string,
   dst: string,
   print: string | undefined,
-  expected: { digest: string; bytes: number },
+  expected: { digest: string; bytes?: number },
   signal: AbortSignal,
-  buffer: Buffer
+  buffer: Buffer = Buffer.allocUnsafe(MiB)
 ): Promise<void> {
   signal.throwIfAborted()
   const listed = await fsp.lstat(src, { bigint: true })
-  if (listed.isSymbolicLink() || !listed.isFile() || entryPrint('file', listed) !== print)
+  if (
+    listed.isSymbolicLink() ||
+    !listed.isFile() ||
+    (print !== undefined && entryPrint('file', listed) !== print)
+  )
     throw changed('changedDuringCopy')
+  const want = print ?? entryPrint('file', listed)
   signal.throwIfAborted()
   const from = await fsp.open(src, 'r')
   try {
     const st = await from.stat({ bigint: true })
-    if (entryPrint('file', st) !== print) throw changed('changedDuringCopy')
+    if (entryPrint('file', st) !== want) throw changed('changedDuringCopy')
+    const bytes = expected.bytes ?? Number(st.size)
     signal.throwIfAborted()
     const to = await fsp.open(dst, 'wx')
     try {
@@ -263,16 +270,15 @@ async function copyFileVerified(
         const { bytesRead } = await from.read(buffer, 0, buffer.length, null)
         if (!bytesRead) break
         total += bytesRead
-        if (total > expected.bytes) throw changed('changedDuringCopy')
+        if (total > bytes) throw changed('changedDuringCopy')
         const chunk = buffer.subarray(0, bytesRead)
         h.update(chunk)
         let off = 0
         while (off < chunk.length)
           off += (await to.write(chunk, off, chunk.length - off)).bytesWritten
       }
-      if (total !== expected.bytes || h.digest('hex') !== expected.digest)
-        throw changed('changedDuringCopy')
-      if (entryPrint('file', await from.stat({ bigint: true })) !== print)
+      if (total !== bytes || h.digest('hex') !== expected.digest) throw changed('changedDuringCopy')
+      if (entryPrint('file', await from.stat({ bigint: true })) !== want)
         throw changed('changedDuringCopy')
       await to.sync()
     } finally {

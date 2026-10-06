@@ -17,7 +17,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, promises as fsp, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { recheckBinding } from '../census/paths'
-import type { CandidateBinding, CensusEntry, DiscoveryHandle } from '../census/types'
+import type { CandidateBinding, CensusEntry, DiscoveryHandle, PathIdentity } from '../census/types'
 import { readStoredVariants, type StoredVariant } from '../globalImport'
 import { GLOBAL_TOOLS, type GlobalTool } from '../globalPaths'
 import { atomicWrite } from '../write'
@@ -77,8 +77,22 @@ export interface PlanBindings {
   selections: ProjectSelection[]
   variants: Omit<VariantObservation, 'manifest'>[]
   destinations: Record<string, PlanDestinationBinding>
-  /** Restore plans: the bound backup and current state of each destination (operations.ts / restore.ts) */
-  restore?: unknown
+  /** Restore plans: what each destination goes back to, from which backup (restore.ts) */
+  restore?: Record<string, RestoreBinding>
+}
+
+/** A restore change's binding: the backup it reads and the operation's own record of that destination */
+export interface RestoreBinding {
+  operationId: string
+  index: number
+  backup: string
+  /** Digest the backup holds (null: the destination was absent before) */
+  backupDigest: string | null
+  /** What the restored operation wrote there (the content a restore may replace or remove) */
+  deliveredDigest: string | null
+  previousOwner: ProjectDeliveryRecord | null
+  /** Folders the restored operation created (pruned only when still the same, unlinked and empty) */
+  createdDirs: PathIdentity[]
 }
 
 export interface ProjectStoredPlan {

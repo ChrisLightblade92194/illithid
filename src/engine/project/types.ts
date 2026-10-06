@@ -128,17 +128,19 @@ export interface ProjectImportHooks {
   afterRegister?: (index: number) => void | Promise<void>
 }
 
-/** A backend job (import now; apply later) as the renderer polls it */
-export interface ProjectJobView {
+interface ProjectJobBase {
   id: string
-  kind: 'import' | 'apply'
   status: 'running' | 'completed' | 'cancelled' | 'failed'
   progress: { done: number; total: number }
   /** Cancel was asked: the job stops after its current step and still reports what it completed */
   cancelRequested?: boolean
-  result?: ProjectImportResult
   reason?: string
 }
+
+/** A backend job as the renderer polls it: an import of census items, or the apply of a stored plan */
+export type ProjectJobView =
+  | (ProjectJobBase & { kind: 'import'; result?: ProjectImportResult })
+  | (ProjectJobBase & { kind: 'apply'; result?: ProjectOperationView })
 
 /** Where a selected variant goes in a project: the tool's native default, or a supported alternative rule slot */
 export type ProjectSlot =
@@ -275,3 +277,88 @@ export type ProjectDecision =
       action: 'create' | 'unchanged' | 'skip' | 'replace'
     }
   | { destinationId: string; action: 'restore' | 'skip' }
+
+export type ProjectResultStatus =
+  'pending' | 'done' | 'unchanged' | 'skipped' | 'refused' | 'failed' | 'notAttempted'
+
+/** Persisted before the step it names starts (writing: a project entry may change from here on) */
+export type ProjectPhase = 'pending' | 'checked' | 'backedUp' | 'writing' | 'written' | 'recorded'
+
+/** What happened to one physical destination of an apply */
+export interface ProjectOperationResult {
+  index: number
+  destinationId: string
+  destination: string
+  relativePath: string
+  project: { id: string; path: string; name: string }
+  kind: GlobalKind
+  recipients: GlobalTool[]
+  action: ProjectPlanChange['action']
+  variantId: string | null
+  status: ProjectResultStatus
+  phase: ProjectPhase
+  code?: string
+  beforeDigest: string | null
+  afterDigest: string | null
+  /** Verified backup taken before this destination changed (kept, never deleted by age) */
+  backup?: string
+  /** Folders this operation created on the way to the destination, with their identity right after creation */
+  createdDirs?: PathIdentity[]
+  /** The delivery record written for this destination */
+  deliveryId?: string
+  /** An aside copy or staged entry that could not be removed after a completed write */
+  leftover?: string
+}
+
+export interface ProjectOperationRecord {
+  version: 1
+  scope: 'project'
+  id: string
+  planId: string
+  kind: 'sync' | 'restore'
+  restoreOf?: string
+  pid: number
+  startedAt: string
+  updatedAt: string
+  finishedAt?: string
+  status: 'running' | 'completed' | 'partial' | 'failed' | 'refused' | 'cancelled'
+  results: ProjectOperationResult[]
+  /** Whole-operation refusal (nothing attempted) */
+  error?: { code: string; message: string }
+}
+
+/** An operation as listed: a running record whose process is gone is interrupted; its unfinished writes uncertain */
+export type ProjectOperationView = Omit<ProjectOperationRecord, 'status' | 'results'> & {
+  status: ProjectOperationRecord['status'] | 'interrupted'
+  results: (Omit<ProjectOperationResult, 'status'> & {
+    status: ProjectResultStatus | 'uncertain'
+  })[]
+}
+
+/** Backend/test-only phase boundaries of an apply (never exposed over IPC) */
+export interface ProjectPhaseHooks {
+  afterBackup?: (record: ProjectOperationRecord, index: number) => void | Promise<void>
+  afterWrite?: (record: ProjectOperationRecord, index: number) => void | Promise<void>
+  afterRecord?: (record: ProjectOperationRecord, index: number) => void | Promise<void>
+}
+
+/** meta.json of a project backup: written last, after the content was copied, flushed and verified */
+export interface ProjectBackupMeta {
+  version: 1
+  scope: 'project'
+  operationId: string
+  index: number
+  destinationId: string
+  destination: string
+  relativePath: string
+  kind: GlobalKind
+  project: CandidateBinding
+  /** What was at the destination before the change */
+  shape: 'absent' | 'file' | 'dir'
+  digest: string | null
+  digestAlgorithm: RevisionAlgorithm
+  manifest?: CensusEntry[]
+  /** Delivery record of the destination before the change (null = not managed by a project delivery) */
+  previousOwner: ProjectDeliveryRecord | null
+  at: string
+}

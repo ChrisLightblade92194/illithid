@@ -103,3 +103,56 @@ export function copyTree(src: string, dst: string): void {
     else writeFileSync(d, readFileSync(s))
   }
 }
+
+export interface DeliveryWorkspace {
+  base: string
+  home: string
+  root: string
+  discovery: DiscoveryHandle
+  /** Candidate id of a project folder under root */
+  cid: (name: string) => string
+  /** Library variants: rule R, rule R2 (other content), skill caveman (resource, hidden file, empty folder) */
+  rule: string
+  rule2: string
+  skill: string
+  ruleBytes: Buffer
+}
+
+/**
+ * Library variants and projects for delivery tests: B (empty), C (AGENTS.md equal to R), E (AGENTS.md differing),
+ * F (an unrelated skill). Discovery of the root is returned with its bindings.
+ */
+export async function deliveryWorkspace(): Promise<DeliveryWorkspace> {
+  const { base, home, root } = projectWorkspace()
+  const ruleBytes = Buffer.from('# shared\r\n@docs/x.md\n')
+  const rule = seedRawVariant(home, {
+    kind: 'rule',
+    name: 'shared.md',
+    content: ruleBytes,
+    origins: []
+  }).id
+  const rule2 = seedRawVariant(home, {
+    kind: 'rule',
+    name: 'shared.md',
+    content: '# other\n',
+    origins: []
+  }).id
+  const skill = seedRawVariant(home, {
+    kind: 'skill',
+    name: 'caveman',
+    content: {
+      'SKILL.md': SKILL('caveman'),
+      'assets/x.bin': Buffer.from([1, 2]),
+      '.DS_Store': 'x'
+    },
+    origins: []
+  })
+  mkdirSync(join(skill.dir, 'content', 'empty'))
+  mkdirSync(join(root, 'B'))
+  put(root, 'C/AGENTS.md', ruleBytes)
+  put(root, 'E/AGENTS.md', '# edited locally\n')
+  put(root, 'F/.agents/skills/unrelated/SKILL.md', SKILL('unrelated'))
+  const discovery = await discoverProjects(root)
+  const cid = (name: string): string => discovery.view.candidates.find((c) => c.name === name)!.id
+  return { base, home, root, discovery, cid, rule, rule2, skill: skill.id, ruleBytes }
+}

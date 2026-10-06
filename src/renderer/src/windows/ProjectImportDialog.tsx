@@ -133,15 +133,16 @@ export function ProjectImportDialog({
     if (jobId.current) cancelJob(jobId.current, gen.current)
   }
 
-  const imported = job?.result?.items.some((i) => i.status === 'imported') ?? false
+  const result = job?.kind === 'import' ? job.result : undefined
+  const imported = result?.items.some((i) => i.status === 'imported') ?? false
   const close = (): void => {
     if (phase === 'running') return
     gen.current++
     onClose(imported)
   }
-  const outcome = new Map((job?.result?.items ?? []).map((i) => [i.itemId, i]))
+  const outcome = new Map((result?.items ?? []).map((i) => [i.itemId, i]))
   const count = (s: ProjectImportItemResult['status']): number =>
-    job?.result?.items.filter((i) => i.status === s).length ?? 0
+    result?.items.filter((i) => i.status === s).length ?? 0
 
   return (
     <Modal

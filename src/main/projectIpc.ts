@@ -58,6 +58,8 @@ interface Job {
   controller: AbortController
 }
 
+type ImportJob = Extract<ProjectJobView, { kind: 'import' }>
+
 const copy = (v: ProjectJobView): ProjectJobView => JSON.parse(JSON.stringify(v)) as ProjectJobView
 
 export function projectHandlers(
@@ -88,32 +90,33 @@ export function projectHandlers(
         const runId = text(o.runId, 'runId')
         const itemIds = idList(o.itemIds, 'item')
         const lease = access.acquireImport(runId, itemIds)
-        const j: Job = {
-          controller: new AbortController(),
-          view: {
-            id: `job-${randomUUID()}`,
-            kind: 'import',
-            status: 'running',
-            progress: { done: 0, total: itemIds.length }
-          }
+        let view: ImportJob = {
+          id: `job-${randomUUID()}`,
+          kind: 'import',
+          status: 'running',
+          progress: { done: 0, total: itemIds.length }
         }
-        jobs.set(j.view.id, j)
+        const j: Job = { controller: new AbortController(), view }
+        const set = (next: ImportJob): void => {
+          // A cancel request recorded on the shared view is kept
+          view = { ...next, ...(j.view.cancelRequested ? { cancelRequested: true } : {}) }
+          j.view = view
+        }
+        jobs.set(view.id, j)
         // Rejection handling is attached before the job can settle: a failure becomes a failed job
         importProjectItems({ home, signal: j.controller.signal }, lease, {
           onProgress: (done, total) => {
-            if (j.view.status === 'running') j.view = { ...j.view, progress: { done, total } }
+            if (view.status === 'running') set({ ...view, progress: { done, total } })
           }
         }).then(
-          (result) => {
-            j.view = {
-              ...j.view,
+          (result) =>
+            set({
+              ...view,
               status: result.status === 'cancelled' ? 'cancelled' : 'completed',
               result
-            }
-          },
-          (e: unknown) => {
-            j.view = { ...j.view, status: 'failed', reason: (e as Error)?.message ?? String(e) }
-          }
+            }),
+          (e: unknown) =>
+            set({ ...view, status: 'failed', reason: (e as Error)?.message ?? String(e) })
         )
         return { jobId: j.view.id }
       }),
