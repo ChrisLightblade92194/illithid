@@ -1,6 +1,6 @@
 # Windows project import and delivery v1
 
-Date: 2026-10-06. Status: draft for user review. Application baseline: `5abf40796c7737f132230f52e3a4395247e41983`, the independently reviewed project-census checkpoint. This document specifies a new increment; it does not authorize product implementation, installation or publication.
+Date: 2026-10-06. Status: approved by the user on 2026-10-06, permitting preparation of the implementation plan. Application baseline: `5abf40796c7737f132230f52e3a4395247e41983`, the independently reviewed project-census checkpoint. This document specifies a new increment; it does not authorize product implementation, installation or publication.
 
 ## Intended outcome and approved choices
 
@@ -156,4 +156,4 @@ That spike needs its own approved question and bounded probe. It does not author
 
 ## Next stage
 
-The user reviews this written draft and its explicit v1 limits, particularly one recipient root per operation, native rule slots, shared physical targets and partial-operation behavior. Written-spec approval permits an implementation plan and a scoped implementer handoff. No product code, dependencies, installer, installation or publication are changed by this design checkpoint.
+The user approved this written specification, including one recipient root per operation, native rule slots, shared physical targets and partial-operation behavior. The next checkpoint is the implementation plan and scoped implementer handoff for user review. No product code, dependencies, installer, installation or publication are changed by this design checkpoint.
