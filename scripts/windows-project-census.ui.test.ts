@@ -474,3 +474,39 @@ test(
     }
   }
 )
+
+test(
+  'census: a project filter chosen for one root does not hide the results of the next root',
+  { timeout: 240000 },
+  async () => {
+    const ws = workspace()
+    const { app, page } = await launch(ws.home)
+    try {
+      await page.getByTestId('nav-census').click()
+      await chooseRoot(app, page, ws.root)
+      await page.getByTestId('census-candidate').first().waitFor()
+      await runCensus(page, ['p1', 'p2'])
+      await page.getByTestId('census-results').waitFor()
+      await page.getByTestId('census-filter-project').selectOption({ label: 'p1' })
+      assert.deepEqual(await rels(page), ['p1:AGENTS.md', 'p1:CLAUDE.md', 'p1:.claude/skills/tool'])
+      // Another root: its only rule is listed without resetting the filter by hand
+      await chooseRoot(app, page, ws.other)
+      await page.locator('[data-testid="census-candidate"][data-name="q1"]').waitFor()
+      await runCensus(page, ['q1'])
+      await page.getByTestId('census-results').waitFor()
+      assert.equal(await page.getByTestId('census-summary').getAttribute('data-rules'), '1')
+      assert.deepEqual(await rels(page), ['q1:AGENTS.md'])
+      // The filter shown is the filter applied
+      assert.equal(await page.getByTestId('census-filter-project').inputValue(), 'all')
+      // A project filter that no longer matches the new snapshot of the same root is also dropped
+      await page.getByTestId('census-filter-project').selectOption({ label: 'q1' })
+      await page.getByTestId('census-check-q1').uncheck()
+      await runCensus(page, ['q2'])
+      await page.getByTestId('census-results').waitFor()
+      assert.deepEqual(await rels(page), ['q2:AGENTS.md'])
+      assert.equal(await page.getByTestId('census-filter-project').inputValue(), 'all')
+    } finally {
+      await app.close()
+    }
+  }
+)

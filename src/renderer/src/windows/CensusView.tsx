@@ -134,6 +134,8 @@ export function CensusView(): React.JSX.Element {
     setRoot(dir)
     setDiscovery(null)
     setSelected([])
+    // Project ids belong to one listing: a filter on an earlier root's project would hide everything
+    setProject('all')
     setPhase('idle')
     setListing(true)
     try {
@@ -162,7 +164,12 @@ export function CensusView(): React.JSX.Element {
           if (v.status === 'running') return poll(runId, g)
           running.current = null
           setPhase(v.status)
-          if (v.status === 'completed' && v.snapshot) setResult({ runId, snapshot: v.snapshot })
+          if (v.status === 'completed' && v.snapshot) {
+            const projects = v.snapshot.projects
+            // The filter applied is the one shown: a project absent from this snapshot falls back to all
+            setProject((p) => (projects.some((x) => x.candidateId === p) ? p : 'all'))
+            setResult({ runId, snapshot: v.snapshot })
+          }
           if (v.status === 'failed') setError(v.reason ?? 'The census failed.')
         },
         (e) => {
