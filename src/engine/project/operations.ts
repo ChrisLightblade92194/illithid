@@ -8,9 +8,12 @@
  *   crash afterwards is reported as uncertain, never as success or as "nothing changed"; nothing is resumed.
  * - Per destination: the project chain, the library variant (or backup), the destination content, identity and
  *   ownership are checked again; a complete backup is copied, flushed and verified before meta.json is written; the
- *   destination is checked again after the backup; the new content is staged next to it and verified, then committed
- *   (an exclusive hard link for a new file, a rename otherwise; a folder is swapped by renames); the result is read back
- *   completely before the ownership record is written. A refusal skips that destination; a failure or a cancellation
+ *   destination is checked again after the backup; the new content is staged next to it and verified; then the complete
+ *   source (library variant or backup), the project chain, the destination (with the folders this operation created)
+ *   and its owner are checked again immediately before the commit (an exclusive hard link for a new file, a rename
+ *   otherwise; a folder is swapped by renames); the result is read back completely before the ownership record is
+ *   written. A change seen there refuses the destination: the staged copy and the still-empty folders created for it
+ *   are removed, the new local content is left alone. A refusal skips that destination; a failure or a cancellation
  *   stops the queue (later destinations are not attempted). Not atomic across destinations.
  * - Reads and copies are asynchronous and bounded (the Electron main process stays responsive); the abort signal is
  *   observed until a destination starts changing, then that destination is finished and recorded.
@@ -514,7 +517,8 @@ async function recheck(s: Step): Promise<ProjectDestinationObservation> {
   const { project: _p, localSlots: _l, ...now } = obs
   void _p
   void _l
-  const ours = s.rec.results.flatMap((r) => (r.index === s.res.index ? [] : (r.createdDirs ?? [])))
+  // Folders created by this operation, this destination's own included once they exist (after staging)
+  const ours = s.rec.results.flatMap((r) => r.createdDirs ?? [])
   if (!sameRecord(now, expectedNow(binding.observation, ours)))
     throw new Refused('changedSinceCheck')
   const owner = projectOwnerAt(
@@ -604,7 +608,10 @@ async function syncChange(s: Step): Promise<void> {
         },
         ctx.signal
       )
-      await commit(binding.destination, binding.kind, staged, now, res)
+      // Staging took time: the complete source, the project chain, the destination and its owner are checked again
+      await variantNow(s)
+      const ready = await recheck(s)
+      await commit(binding.destination, binding.kind, staged, ready, res)
       staged = null
     } catch (e) {
       if (staged) await fsp.rm(staged, { recursive: true, force: true }).catch(() => {})
@@ -648,18 +655,23 @@ async function syncChange(s: Step): Promise<void> {
   res.deliveryId = record.id
 }
 
-async function restoreChange(s: Step, rb: RestoreBinding): Promise<void> {
-  const { ctx, res, binding } = s
-  // The backup must still hold exactly what it recorded
+/** The backup must still hold exactly what it recorded */
+async function backupHeld(rb: RestoreBinding, signal: AbortSignal): Promise<ProjectBackupMeta> {
   const meta = readProjectBackupMeta(rb.backup)
   if (!meta || meta.digest !== rb.backupDigest) throw new Refused('backupCorrupt')
   if (meta.shape !== 'absent') {
-    const held = await digestAt(join(rb.backup, 'content'), meta.kind, ctx.signal).catch(() => null)
+    const held = await digestAt(join(rb.backup, 'content'), meta.kind, signal).catch(() => null)
     if (held?.digest !== meta.digest) throw new Refused('backupCorrupt')
   }
+  return meta
+}
+
+async function restoreChange(s: Step, rb: RestoreBinding): Promise<void> {
+  const { ctx, res, binding } = s
+  const meta = await backupHeld(rb, ctx.signal)
   const obs = await recheck(s)
   if (obs.digest !== rb.backupDigest)
-    await backUpAndWrite(s, obs, async (now) => {
+    await backUpAndWrite(s, obs, async () => {
       if (meta.shape === 'absent') {
         await removeDelivered(binding.destination, binding.kind, rb.deliveredDigest!, res)
         const left = await pruneCreated(rb.createdDirs)
@@ -678,7 +690,10 @@ async function restoreChange(s: Step, rb: RestoreBinding): Promise<void> {
         ctx.signal
       )
       try {
-        await commit(binding.destination, binding.kind, staged, now, res)
+        // Staging took time: the backup, the project chain, the destination and its owner are checked again
+        await backupHeld(rb, ctx.signal)
+        const ready = await recheck(s)
+        await commit(binding.destination, binding.kind, staged, ready, res)
       } catch (e) {
         await fsp.rm(staged, { recursive: true, force: true }).catch(() => {})
         throw e
