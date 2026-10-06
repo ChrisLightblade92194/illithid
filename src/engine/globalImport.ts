@@ -206,20 +206,34 @@ function refPath(home: string, fromDir: string, ref: string): string {
   return isAbsolute(ref) ? resolve(ref) : resolve(fromDir, ref)
 }
 
-function ruleReferences(home: string, file: string, text: string): GlobalReference[] {
+export function ruleReferences(
+  home: string,
+  file: string,
+  text: string,
+  exists: (p: string) => boolean = existsSync
+): GlobalReference[] {
   return includeRefs(text).map((ref) => ({
     ref,
-    resolved: existsSync(refPath(home, dirname(file), ref)),
+    resolved: exists(refPath(home, dirname(file), ref)),
     external: true
   }))
 }
 
-/** References in a skill's markdown files that leave the skill folder (links and includes) */
-function skillReferences(home: string, root: string, mdFiles: string[]): GlobalReference[] {
+/**
+ * References in a skill's markdown files that leave the skill folder (links and includes). `read` supplies a file's
+ * text (a project import reads its verified library copy); `exists` decides whether a referenced path exists.
+ */
+export function skillReferences(
+  home: string,
+  root: string,
+  mdFiles: string[],
+  exists: (p: string) => boolean = existsSync,
+  read: (file: string) => string = (f) => readFileSync(f, 'utf8')
+): GlobalReference[] {
   const out: GlobalReference[] = []
   const seen = new Set<string>()
   for (const f of mdFiles) {
-    const text = readFileSync(f, 'utf8')
+    const text = read(f)
     const refs = [
       ...proseLines(text).flatMap((l) => [...l.matchAll(LINK_RE)].map((m) => m[1])),
       ...includeRefs(text)
@@ -231,7 +245,7 @@ function skillReferences(home: string, root: string, mdFiles: string[]): GlobalR
       const abs = refPath(home, dirname(f), ref)
       if (within(root, abs) || seen.has(ref)) continue
       seen.add(ref)
-      out.push({ ref, resolved: existsSync(abs), external: true })
+      out.push({ ref, resolved: exists(abs), external: true })
     }
   }
   return out

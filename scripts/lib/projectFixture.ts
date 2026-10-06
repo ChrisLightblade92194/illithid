@@ -3,7 +3,7 @@
  * under the OS temp folder with spaces and non-ASCII characters in its path; nothing here reads real projects.
  */
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { discoverProjects } from '../../src/engine/census/paths'
 import type { CandidateBinding, DiscoveryHandle } from '../../src/engine/census/types'
@@ -88,4 +88,18 @@ export function seedRawVariant(
     ) + '\n'
   )
   return { id, dir }
+}
+
+/**
+ * Recursive copy of plain files and folders. Node 22's native fs.cpSync crashes the process (0xC0000409) on the
+ * non-ASCII fixture paths, so tests copy trees with this instead.
+ */
+export function copyTree(src: string, dst: string): void {
+  mkdirSync(dst)
+  for (const n of readdirSync(src)) {
+    const s = join(src, n)
+    const d = join(dst, n)
+    if (lstatSync(s).isDirectory()) copyTree(s, d)
+    else writeFileSync(d, readFileSync(s))
+  }
 }

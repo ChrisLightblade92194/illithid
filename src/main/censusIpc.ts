@@ -15,12 +15,12 @@ import {
   CensusError,
   type CensusDetails,
   type CensusItem,
-  type CensusRunView,
   type CensusSideRef,
-  type DiscoveryHandle,
   type RulePreview
 } from '../engine/census/types'
+import type { CensusImportAccess } from '../engine/project/types'
 import type { CENSUS_CHANNELS, GlobalResult } from '../shared/api'
+import { CensusSession, type CensusRun } from './censusSession'
 
 type CensusChannel = (typeof CENSUS_CHANNELS)[number]
 
@@ -120,12 +120,7 @@ function decode(head: Buffer, truncated: boolean): Pick<RulePreview, 'encoding' 
   }
 }
 
-interface Run {
-  id: string
-  discovery: DiscoveryHandle
-  controller: AbortController
-  view: CensusRunView
-}
+type Run = CensusRun
 
 function sideOf(r: Run, item: CensusItem): CensusSideRef {
   const projectPath = r.discovery.bindings.get(item.projectId)!.path
@@ -171,10 +166,33 @@ async function previewRule(r: Run, item: CensusItem): Promise<RulePreview> {
   }
 }
 
+type CensusHandlers = Record<CensusChannel, (...args: unknown[]) => Promise<unknown>>
+
+/**
+ * The census channels and the import access of one session (ipc.ts builds one service and gives its access to the
+ * project handlers). The five census requests stay read-only.
+ */
+export function createCensusService(
+  platform: NodeJS.Platform = process.platform,
+  scan: typeof scanProjects = scanProjects
+): { handlers: CensusHandlers; access: CensusImportAccess } {
+  const session = new CensusSession(platform)
+  return { handlers: handlersOf(session, platform, scan), access: session }
+}
+
+/** Compatibility wrapper: the census channels of a new session */
 export function censusHandlers(
   platform: NodeJS.Platform = process.platform,
   scan: typeof scanProjects = scanProjects
-): Record<CensusChannel, (...args: unknown[]) => Promise<unknown>> {
+): CensusHandlers {
+  return createCensusService(platform, scan).handlers
+}
+
+function handlersOf(
+  session: CensusSession,
+  platform: NodeJS.Platform,
+  scan: typeof scanProjects
+): CensusHandlers {
   if (platform !== 'win32') {
     const refuse = async (): Promise<GlobalResult<never>> => ({
       ok: false,
@@ -189,29 +207,22 @@ export function censusHandlers(
       censusInspect: refuse
     }
   }
-  let discovery: DiscoveryHandle | null = null
-  let run: Run | null = null
-  /** Bumped by every discovery and start: a pending older one finds itself superseded */
-  let generation = 0
-  const supersede = (): void => {
-    run?.controller.abort()
-    run = null
-  }
+  const supersede = (): void => session.supersede()
   const current = (runId: string): Run => {
-    if (!run || run.id !== runId) throw stale()
-    return run
+    if (!session.run || session.run.id !== runId) throw stale()
+    return session.run
   }
 
   return {
     censusDiscover: (...args) =>
       wrap(async () => {
         const root = text(request(args, ['root']).root, 'root')
-        const gen = ++generation
+        const gen = ++session.generation
         supersede()
-        discovery = null
+        session.discovery = null
         const d = await discoverProjects(root)
-        if (gen !== generation) throw stale()
-        discovery = d
+        if (gen !== session.generation) throw stale()
+        session.discovery = d
         return d.view
       }),
     censusStart: (...args) =>
@@ -219,14 +230,14 @@ export function censusHandlers(
         const o = request(args, ['discoveryId', 'candidateIds'])
         const discoveryId = text(o.discoveryId, 'discoveryId')
         const candidateIds = idList(o.candidateIds)
-        const d = discovery
+        const d = session.discovery
         if (!d || d.view.id !== discoveryId) throw stale()
         if (candidateIds.some((id) => !d.bindings.has(id)))
           throw invalid('Not an available project of this listing.')
-        const gen = ++generation
+        const gen = ++session.generation
         supersede()
         await validateSelection(d, candidateIds)
-        if (gen !== generation || discovery !== d) throw stale()
+        if (gen !== session.generation || session.discovery !== d) throw stale()
         const r: Run = {
           id: randomUUID(),
           discovery: d,
@@ -242,8 +253,8 @@ export function censusHandlers(
           }
         }
         r.view.runId = r.id
-        run = r
-        const live = (): boolean => run === r && r.view.status === 'running'
+        session.run = r
+        const live = (): boolean => session.run === r && r.view.status === 'running'
         // Rejection handling is attached before the job can settle: a failure becomes a failed run
         scan(d, candidateIds, {
           signal: r.controller.signal,
@@ -301,7 +312,7 @@ export function censusHandlers(
           }
         // After every asynchronous step the run must still be the current, completed (not cancelled) one
         const stillCurrent = (): void => {
-          if (run !== r || r.view.status !== 'completed' || r.controller.signal.aborted)
+          if (session.run !== r || r.view.status !== 'completed' || r.controller.signal.aborted)
             throw stale()
         }
         for (const i of [left, right]) {

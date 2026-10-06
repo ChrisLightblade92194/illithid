@@ -2,7 +2,7 @@
  * Project import and delivery contracts (spec 2026-10-06 project delivery). Node-free, so the renderer can import the
  * view types. Trusted backend structures (candidate bindings, observations, stored plans) never enter an IPC result.
  */
-import type { CandidateBinding, CensusEntry, PathIdentity } from '../census/types'
+import type { CandidateBinding, CensusEntry, CensusItem, PathIdentity } from '../census/types'
 import type { GlobalKind } from '../globalImport'
 import type { GlobalTool } from '../globalPaths'
 
@@ -81,4 +81,49 @@ export class ProjectError extends Error {
 export interface ProjectContext {
   home: string
   signal: AbortSignal
+}
+
+/** A complete census item with the binding of its project (main-process input, never a renderer capability) */
+export interface BoundCensusItem {
+  item: CensusItem
+  project: CandidateBinding
+}
+
+/**
+ * The selected items of the current completed census run. `signal` aborts when the run is cancelled or superseded;
+ * `assertCurrent` throws stale once it is no longer the current completed run. Not an authentication claim.
+ */
+export interface CensusImportLease {
+  items: readonly BoundCensusItem[]
+  signal: AbortSignal
+  assertCurrent(): void
+}
+
+export interface CensusImportAccess {
+  acquireImport(runId: string, itemIds: readonly string[]): CensusImportLease
+}
+
+export interface ProjectImportItemResult {
+  itemId: string
+  kind: GlobalKind
+  /** Project folder and project-relative path of the occurrence */
+  projectPath: string
+  relativePath: string
+  status: 'imported' | 'refused' | 'failed' | 'notAttempted'
+  code?: string
+  reason?: string
+  variantId?: string
+}
+
+export interface ProjectImportResult {
+  status: 'completed' | 'partial' | 'refused' | 'failed' | 'cancelled'
+  items: ProjectImportItemResult[]
+  /** Variants registered by this import (kept after a cancellation) */
+  variantIds: string[]
+}
+
+/** Backend/test-only observation points of an import (never exposed over IPC) */
+export interface ProjectImportHooks {
+  onProgress?: (done: number, total: number) => void
+  afterRegister?: (index: number) => void | Promise<void>
 }
