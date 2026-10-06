@@ -70,6 +70,7 @@ import { shellEnvReady } from './shellEnv'
 import { marketHandlers } from './market'
 import { releaseHandlers } from './releaseScope'
 import { globalHandlers } from './globalIpc'
+import { censusHandlers } from './censusIpc'
 import createWorker from './worker?nodeWorker'
 
 /** fixture HOME. Used by check scripts to inject a temp directory instead of the real HOME */
@@ -326,6 +327,7 @@ export function registerIpc(): void {
   const market = marketHandlers(home, libWrite)
   const handlers: Record<Channel, (...args: unknown[]) => Promise<unknown>> = {
     ...globalHandlers(home),
+    ...censusHandlers(),
     ...market,
     status: () => inWorker('status', home),
     rules: () => inWorker('rules', home),

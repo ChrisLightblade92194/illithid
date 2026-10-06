@@ -16,6 +16,7 @@ import type { GlobalSyncPlan, GlobalSyncResult } from '../engine/globalManualSyn
 import type { GlobalOperationRecord } from '../engine/globalOperations'
 import type { RestoreDecision } from '../engine/globalRestore'
 import type { GlobalLibraryView, InspectSide, RecipientRef } from '../engine/globalView'
+import type { CensusDetails, CensusDiscovery, CensusRunView } from '../engine/census/types'
 import type {
   PermissionRules,
   AgentDoc,
@@ -954,6 +955,26 @@ export interface Api {
   ): Promise<GlobalResult<GlobalSyncPlan>>
   /** Applies the stored restore preview with this id */
   globalRestoreApply(planId: string): Promise<GlobalResult<GlobalSyncResult>>
+  // ---- Windows project census (spec 2026-10-06): read-only, session-local, requests with exact keys
+  /** The root and its immediate folders (metadata only); replaces the previous discovery and run */
+  censusDiscover(req: { root: string }): Promise<GlobalResult<CensusDiscovery>>
+  /** Starts a census of the selected candidates of the current discovery; replaces the previous run */
+  censusStart(req: {
+    discoveryId: string
+    candidateIds: string[]
+  }): Promise<GlobalResult<{ runId: string }>>
+  /** Progress, then the snapshot, of the current run */
+  censusPoll(req: { runId: string }): Promise<GlobalResult<CensusRunView>>
+  /** Stops the current run; its late completion is discarded */
+  censusCancel(req: {
+    runId: string
+  }): Promise<GlobalResult<{ runId: string; status: 'cancelled' }>>
+  /** Read-only comparison of two complete items of the same kind from the completed current run */
+  censusInspect(req: {
+    runId: string
+    leftId: string
+    rightId: string
+  }): Promise<GlobalResult<CensusDetails>>
   // ---- library writes (library required. Auto sync after save when allowRealApply)
   toggle(
     kind: ManifestKind,
@@ -1182,7 +1203,16 @@ export type GlobalOperationView = Omit<GlobalOperationRecord, 'status'> & {
   status: GlobalOperationRecord['status'] | 'interrupted'
 }
 
-/** Channels of the Windows global flow (the only ones the Windows release exposes, with three app channels) */
+/** Channels of the Windows project census (read-only; exposed by the Windows release with the global flow) */
+export const CENSUS_CHANNELS = [
+  'censusDiscover',
+  'censusStart',
+  'censusPoll',
+  'censusCancel',
+  'censusInspect'
+] as const
+
+/** Channels of the Windows global flow (exposed by the Windows release with the census and three app channels) */
 export const GLOBAL_CHANNELS = [
   'globalPaths',
   'globalPathsConfirm',
@@ -1206,6 +1236,7 @@ export const GLOBAL_CHANNELS = [
 
 export const CHANNELS = [
   ...GLOBAL_CHANNELS,
+  ...CENSUS_CHANNELS,
   'status',
   'rules',
   'skills',

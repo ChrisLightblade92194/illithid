@@ -130,31 +130,26 @@ interface Listed {
   st: BigIntStats
 }
 
-export async function scanProjects(
-  discovery: DiscoveryHandle,
-  candidateIds: readonly string[],
-  options: ScanOptions
-): Promise<CensusSnapshot> {
-  const { signal, onProgress } = options
-  signal.throwIfAborted()
-  const limits: CensusLimits = { ...CENSUS_LIMITS, ...options.limits }
-  const startedAt = new Date().toISOString()
-  const selected = await validateSelection(discovery, candidateIds)
-  const progress: CensusProgress = {
-    projectsCompleted: 0,
-    projectsTotal: selected.length,
-    itemsCompleted: 0
+export interface CensusReader {
+  fs: {
+    lstat(p: string): Promise<BigIntStats>
+    readdir(p: string): Promise<string[]>
+    readlink(p: string): Promise<string | undefined>
   }
-  const report = (patch: Partial<CensusProgress>): void => {
-    Object.assign(progress, patch)
-    onProgress({ ...progress })
-  }
-  const scanId = randomUUID()
-  let seq = 0
-  const buffer = Buffer.allocUnsafe(MiB)
-  const items: CensusItem[] = []
-  const projects: CensusProjectSummary[] = []
+  hashFile(
+    p: string,
+    st: BigIntStats,
+    onChunk?: (chunk: Buffer) => void
+  ): Promise<{ digest: string; bytes: number }>
+  locate(project: string, rel: string): Promise<BigIntStats | null>
+}
 
+/**
+ * Filesystem access of the census and of its details: the signal is checked before every call, links are never
+ * followed, files are read in bounded chunks. Readers throw Incomplete or filesystem errors.
+ */
+export function createReader(signal: AbortSignal, limits: CensusLimits): CensusReader {
+  const buffer = Buffer.allocUnsafe(MiB)
   /** Every filesystem call starts only while the census is not cancelled */
   const fs = {
     lstat: (p: string): Promise<BigIntStats> => {
@@ -172,7 +167,11 @@ export async function scanProjects(
   }
 
   /** Digest of a file as listed (st): bounded, incremental, refused if it is not the listed file or changes meanwhile */
-  async function hashFile(p: string, st: BigIntStats): Promise<{ digest: string; bytes: number }> {
+  async function hashFile(
+    p: string,
+    st: BigIntStats,
+    onChunk?: (chunk: Buffer) => void
+  ): Promise<{ digest: string; bytes: number }> {
     if (st.size > BigInt(limits.fileBytes)) throw new Incomplete('limitExceeded', 'fileBytes')
     signal.throwIfAborted()
     const fh = await fsp.open(p, 'r')
@@ -188,6 +187,7 @@ export async function scanProjects(
         total += bytesRead
         if (BigInt(total) > st.size) throw changed
         h.update(buffer.subarray(0, bytesRead))
+        onChunk?.(buffer.subarray(0, bytesRead))
       }
       if (BigInt(total) !== st.size || !unchanged(await fh.stat({ bigint: true }), st))
         throw changed
@@ -227,6 +227,35 @@ export async function scanProjects(
     }
     return null
   }
+
+  return { fs, hashFile, locate }
+}
+
+export async function scanProjects(
+  discovery: DiscoveryHandle,
+  candidateIds: readonly string[],
+  options: ScanOptions
+): Promise<CensusSnapshot> {
+  const { signal, onProgress } = options
+  signal.throwIfAborted()
+  const limits: CensusLimits = { ...CENSUS_LIMITS, ...options.limits }
+  const startedAt = new Date().toISOString()
+  const selected = await validateSelection(discovery, candidateIds)
+  const progress: CensusProgress = {
+    projectsCompleted: 0,
+    projectsTotal: selected.length,
+    itemsCompleted: 0
+  }
+  const report = (patch: Partial<CensusProgress>): void => {
+    Object.assign(progress, patch)
+    onProgress({ ...progress })
+  }
+  const scanId = randomUUID()
+  let seq = 0
+  const items: CensusItem[] = []
+  const projects: CensusProjectSummary[] = []
+
+  const { fs, hashFile, locate } = createReader(signal, limits)
 
   /** Complete metadata listing of a skill tree, limits enforced; nothing is opened */
   async function listSkill(project: string, rel: string): Promise<Listed[]> {

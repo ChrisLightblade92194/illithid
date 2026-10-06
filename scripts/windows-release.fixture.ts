@@ -24,7 +24,7 @@ import {
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import electronPath from 'electron'
-import { CHANNELS, type Channel } from '../src/shared/api'
+import { CENSUS_CHANNELS, CHANNELS, GLOBAL_CHANNELS, type Channel } from '../src/shared/api'
 import { releaseChannels, releaseHandlers, startupTasks } from '../src/main/releaseScope'
 import { baseEnv, buildDemoHome } from './readme-shots'
 
@@ -128,6 +128,29 @@ test('deferred channels are refused on win32 before their handler runs; darwin c
   const mac = releaseHandlers('darwin', handlers)
   assert.deepEqual(await mac.mcpFetchTools(), { ok: true, value: 'mcpFetchTools' })
   assert.deepEqual(called, ['mcpFetchTools'])
+})
+
+test('the Windows allowlist is the app, global and project census channels exactly; census handlers run there', async () => {
+  assert.deepEqual(releaseChannels('win32'), [
+    'appVersion',
+    'uiPrefsSet',
+    'pickDirectory',
+    ...GLOBAL_CHANNELS,
+    ...CENSUS_CHANNELS
+  ])
+  const called: string[] = []
+  const handlers = Object.fromEntries(
+    CHANNELS.map((c) => [
+      c,
+      async (): Promise<unknown> => {
+        called.push(c)
+        return { ok: true, value: c }
+      }
+    ])
+  ) as Record<Channel, (...args: unknown[]) => Promise<unknown>>
+  const win = releaseHandlers('win32', handlers)
+  for (const c of CENSUS_CHANNELS) assert.deepEqual(await win[c](), { ok: true, value: c }, c)
+  assert.deepEqual(called, [...CENSUS_CHANNELS])
 })
 
 /** stat-only signature of a path tree (size, mtime, link target); depth-limited for large folders */
